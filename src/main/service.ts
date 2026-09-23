@@ -65,7 +65,15 @@ const caseSchema = {
     steps: strings,
     expected: string,
   },
-  required: ["id", "title", "steps", "expected"],
+  required: [
+    "id",
+    "title",
+    "covers",
+    "verifies",
+    "priority",
+    "steps",
+    "expected",
+  ],
 };
 const requirementSchema = {
   type: "object",
@@ -87,7 +95,7 @@ const planStepSchema = {
   properties: { id: string, title: string, covers: strings, expectedFiles: strings },
   required: ["id", "title", "covers", "expectedFiles"],
 };
-const planJsonSchema = {
+export const planJsonSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -101,7 +109,7 @@ const planJsonSchema = {
   },
   required: ["summary", "requirements", "planSteps", "steps", "risks", "testCases", "blockers"],
 };
-const resultJsonSchema = {
+export const resultJsonSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -136,19 +144,33 @@ const resultJsonSchema = {
                     "manual",
                   ],
                 },
-                path: string,
-                command: string,
-                exitCode: { type: "number" },
+                path: { type: ["string", "null"] },
+                command: { type: ["string", "null"] },
+                exitCode: { type: ["number", "null"] },
                 summary: string,
-                sha256: string,
+                sha256: { type: ["string", "null"] },
               },
-              required: ["kind", "summary"],
+              required: [
+                "kind",
+                "path",
+                "command",
+                "exitCode",
+                "summary",
+                "sha256",
+              ],
             },
           },
           covers: strings,
           verifies: strings,
         },
-        required: ["name", "state", "detail"],
+        required: [
+          "name",
+          "state",
+          "detail",
+          "evidence",
+          "covers",
+          "verifies",
+        ],
       },
     },
   },
@@ -174,11 +196,11 @@ const resultSchema = z.object({
                 "coverage",
                 "manual",
               ]),
-              path: z.string().optional(),
-              command: z.string().optional(),
-              exitCode: z.number().optional(),
+              path: z.string().nullable().optional().transform((v) => v ?? undefined),
+              command: z.string().nullable().optional().transform((v) => v ?? undefined),
+              exitCode: z.number().nullable().optional().transform((v) => v ?? undefined),
               summary: z.string(),
-              sha256: z.string().optional(),
+              sha256: z.string().nullable().optional().transform((v) => v ?? undefined),
             }),
           )
           .optional(),
