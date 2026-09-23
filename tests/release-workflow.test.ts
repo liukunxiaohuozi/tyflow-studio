@@ -9,8 +9,8 @@ describe("desktop release workflow", () => {
 
   test("publishes packages through an idempotent, retryable release flow", () => {
     expect(workflow).toContain("Create draft GitHub Release");
-    expect(workflow).toContain("--draft");
-    expect(workflow).toContain("--notes");
+    expect(workflow).toContain("-F draft=true");
+    expect(workflow).toContain('echo "release_id=$release_id"');
     expect(workflow).not.toContain("--generate-notes");
     expect(workflow).toContain("Upload packages with retries");
     expect(workflow).toContain("gh release upload");
@@ -18,6 +18,6 @@ describe("desktop release workflow", () => {
     expect(workflow).toContain("Verify published packages");
     expect(workflow).toContain("gh api");
     expect(workflow).toContain("Publish verified GitHub Release");
-    expect(workflow).toContain("--draft=false");
+    expect(workflow).toContain("-F draft=false");
   });
 });
