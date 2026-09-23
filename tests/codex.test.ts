@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findDesktopCodex, resolveCodex } from "../src/main/codex";
+import {
+  findDesktopCodex,
+  findMacCodex,
+  resolveCodex,
+} from "../src/main/codex";
 import { findCommands, resolveCommand, runCommand } from "../src/main/process";
 
 jest.mock("../src/main/process", () => ({
@@ -56,6 +60,22 @@ test("discovers the Codex Desktop executable outside PATH", () => {
   fs.writeFileSync(executable, "fixture");
   expect(findDesktopCodex(root)).toContain(executable);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("discovers Codex installed by common macOS Node managers outside GUI PATH", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-mac-find-"));
+  const candidates = [
+    path.join(home, ".nvm", "versions", "node", "v24.1.0", "bin", "codex"),
+    path.join(home, ".fnm", "node-versions", "v24.1.0", "installation", "bin", "codex"),
+    path.join(home, ".volta", "bin", "codex"),
+    path.join(home, ".local", "bin", "codex"),
+  ];
+  for (const candidate of candidates) {
+    fs.mkdirSync(path.dirname(candidate), { recursive: true });
+    fs.writeFileSync(candidate, "fixture");
+  }
+  expect(findMacCodex(home)).toEqual(expect.arrayContaining(candidates));
+  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test("a single compatible default CLI is preserved", async () => {

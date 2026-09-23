@@ -5,8 +5,67 @@ import {
   findCommands,
   resolveCommand,
   runCommand,
+  type Command,
   type RunOptions,
 } from "./process";
+
+function existingFiles(values: string[]) {
+  return values.filter((value) => {
+    try {
+      return fs.statSync(value).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
+function versionedExecutables(root: string, suffix: string[]) {
+  try {
+    return fs
+      .readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(root, entry.name, ...suffix));
+  } catch {
+    return [];
+  }
+}
+
+export function findMacCodex(home = os.homedir()): string[] {
+  return existingFiles([
+    "/Applications/Codex.app/Contents/Resources/codex",
+    "/Applications/Codex.app/Contents/Resources/bin/codex",
+    path.join(home, "Applications", "Codex.app", "Contents", "Resources", "codex"),
+    path.join(home, "Applications", "Codex.app", "Contents", "Resources", "bin", "codex"),
+    path.join(home, ".npm-global", "bin", "codex"),
+    path.join(home, ".volta", "bin", "codex"),
+    path.join(home, ".local", "bin", "codex"),
+    path.join(home, ".asdf", "shims", "codex"),
+    path.join(home, ".local", "share", "mise", "shims", "codex"),
+    ...versionedExecutables(
+      path.join(home, ".nvm", "versions", "node"),
+      ["bin", "codex"],
+    ),
+    ...versionedExecutables(
+      path.join(home, ".fnm", "node-versions"),
+      ["installation", "bin", "codex"],
+    ),
+  ]);
+}
+
+export function withMacExecutablePath(command: Command): Command {
+  if (process.platform !== "darwin" || !path.isAbsolute(command.executable))
+    return command;
+  const directory = path.dirname(command.executable);
+  return {
+    ...command,
+    env: {
+      ...command.env,
+      PATH: [directory, command.env?.PATH, process.env.PATH]
+        .filter(Boolean)
+        .join(":"),
+    },
+  };
+}
 
 export function findDesktopCodex(
   localAppData = process.env.LOCALAPPDATA,
@@ -24,20 +83,7 @@ export function findDesktopCodex(
       /* Codex Desktop is optional. */
     }
   }
-  if (process.platform === "darwin") {
-    for (const executable of [
-      "/Applications/Codex.app/Contents/Resources/codex",
-      path.join(
-        os.homedir(),
-        "Applications",
-        "Codex.app",
-        "Contents",
-        "Resources",
-        "codex",
-      ),
-    ])
-      if (fs.existsSync(executable)) candidates.push(executable);
-  }
+  if (process.platform === "darwin") candidates.push(...findMacCodex());
   return candidates;
 }
 
@@ -60,7 +106,7 @@ export async function resolveCodex(
   for (const [order, candidate] of candidates.entries()) {
     if (options.signal?.aborted) throw new Error("任务已停止");
     try {
-      const command = resolveCommand(candidate);
+      const command = withMacExecutablePath(resolveCommand(candidate));
       const identity = JSON.stringify([command.executable, command.args]);
       if (seen.has(identity)) continue;
       seen.add(identity);
