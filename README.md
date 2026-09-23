@@ -64,7 +64,7 @@ npm run pack:portable:mac
 
 同事解压后双击 `TingYun Studio.app`。
 
-2. 用 GitHub Actions：先在本机执行并提交 `portable-bundle/`，再推送 tag 或手动跑 `Desktop builds` workflow，从 Artifacts 下载 Mac/Windows portable zip。
+2. 用 GitHub Actions：先在本机执行并提交 `portable-bundle/`，再推送 tag 或手动跑 `Desktop builds` workflow。Tag 构建会创建或复用对应 GitHub Release，分别重试上传 Windows x64、macOS arm64、macOS x64 三个 portable zip，并在结束前核对产物；手动构建可从 Artifacts 下载。
 
 ```sh
 npm run pack:portable:seed
@@ -96,4 +96,3 @@ git commit -m "Add portable skill bundle for CI"
 本产品不包含原型里用来展示交付流程的「告警规则筛选优化」业务功能。
 
 设计新版采用前可查看文件差异；失败后可点击修复并重测。历次执行与测试保留最近 50 次结果，首次失败不会被重试结果覆盖。启动失败时可以在配置页修改启动脚本或本机页面地址，再从启动阶段重试，代码目录与分支快照保持冻结。
-

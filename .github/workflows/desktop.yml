@@ -63,12 +63,55 @@ jobs:
           pattern: TingYun-Studio-portable-*
           path: release-artifacts
           merge-multiple: true
-      - name: Create GitHub Release
+      - name: Ensure GitHub Release exists
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            release-artifacts/*-portable.zip \
-            --verify-tag \
-            --title "TingYun Studio $GITHUB_REF_NAME" \
-            --generate-notes
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --title "TingYun Studio $GITHUB_REF_NAME" \
+              --generate-notes
+          fi
+      - name: Upload packages with retries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          packages=(release-artifacts/*-portable.zip)
+          if [ "${#packages[@]}" -ne 3 ]; then
+            echo "Expected 3 portable packages, found ${#packages[@]}: ${packages[*]}"
+            exit 1
+          fi
+
+          for package in "${packages[@]}"; do
+            uploaded=false
+            for attempt in 1 2 3; do
+              echo "Uploading $(basename "$package") (attempt $attempt/3)"
+              if gh release upload "$GITHUB_REF_NAME" "$package" --clobber; then
+                uploaded=true
+                break
+              fi
+              sleep $((attempt * 10))
+            done
+            if [ "$uploaded" != true ]; then
+              echo "Failed to upload $(basename "$package") after 3 attempts."
+              exit 1
+            fi
+          done
+      - name: Verify published packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          packages=(release-artifacts/*-portable.zip)
+          published="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
+          for package in "${packages[@]}"; do
+            name="$(basename "$package")"
+            if ! grep -Fqx "$name" <<<"$published"; then
+              echo "Release is missing package: $name"
+              exit 1
+            fi
+          done
