@@ -501,11 +501,40 @@ export async function gitConnection(
   }
 }
 function normalizedRepository(value: string) {
-  return value
-    .trim()
-    .replaceAll("\\", "/")
-    .replace(/\/+$/, "")
-    .replace(/\.git$/, "");
+  const normalized = value.trim().replaceAll("\\", "/");
+  const scp = normalized.includes("://")
+    ? null
+    : normalized.match(/^(?:[^@/:]+@)?([^/:]+):(.+)$/);
+  if (scp && !/^[a-z]:\//i.test(normalized))
+    return `${scp[1].toLowerCase()}/${scp[2]}`
+      .replace(/\/+$/, "")
+      .replace(/\.git$/i, "");
+  try {
+    const url = new URL(normalized);
+    if (["http:", "https:", "ssh:", "git:"].includes(url.protocol)) {
+      const port =
+        (url.protocol === "ssh:" && url.port === "22") ||
+        (url.protocol === "http:" && url.port === "80") ||
+        (url.protocol === "https:" && url.port === "443")
+          ? ""
+          : url.port;
+      return `${url.hostname.toLowerCase()}${port ? `:${port}` : ""}/${url.pathname.replace(/^\/+/, "")}`
+        .replace(/\/+$/, "")
+        .replace(/\.git$/i, "");
+    }
+  } catch {
+    /* Local paths and non-URL Git syntax use normalized text comparison. */
+  }
+  return normalized.replace(/\/+$/, "").replace(/\.git$/i, "");
+}
+export function repositoriesMatch(left: string, right: string) {
+  return normalizedRepository(left) === normalizedRepository(right);
+}
+function availableStudioRemote(names: string[]) {
+  let candidate = "tingyun-studio";
+  let suffix = 2;
+  while (names.includes(candidate)) candidate = `tingyun-studio-${suffix++}`;
+  return candidate;
 }
 export async function syncRepository(
   project: Project,
@@ -521,22 +550,19 @@ export async function syncRepository(
     async (cwd, repository, env, prefix) => {
       const names = before.remotes ?? [];
       let remote: string | undefined;
+      let addRemote = false;
       const requested = project.repository.trim();
       if (requested) {
         for (const name of names) {
           const url = (await run(cwd, ["remote", "get-url", name])).trim();
-          if (normalizedRepository(url) === normalizedRepository(requested)) {
+          if (repositoriesMatch(url, requested)) {
             remote = name;
             break;
           }
         }
-        if (!remote && names.length)
-          throw new Error(
-            "配置仓库地址与本地 remote 不一致，请核对项目目录与 Git 地址；不会替换现有远程配置",
-          );
         if (!remote) {
-          await run(cwd, ["remote", "add", "origin", requested]);
-          remote = "origin";
+          remote = names.length ? availableStudioRemote(names) : "origin";
+          addRemote = true;
         }
       } else remote = "origin";
       if (!names.includes(remote) && !requested)
@@ -563,6 +589,7 @@ export async function syncRepository(
         signal,
       );
       if (signal?.aborted) throw new Error("任务已停止");
+      if (addRemote) await run(cwd, ["remote", "add", remote, requested]);
       const mapping = "+refs/heads/*:refs/remotes/" + remote + "/*";
       let mappings = "";
       try {
@@ -640,7 +667,7 @@ export async function commitAndPush(
       for (const name of remoteNames) {
         try {
           const url = await run(cwd, ["remote", "get-url", name]);
-          if (normalizedRepository(url) === normalizedRepository(repository)) {
+          if (repositoriesMatch(url, repository)) {
             remote = name;
             break;
           }

@@ -8,6 +8,7 @@ import {
   inspectRepository,
   resolveTargetCommit,
   prepareBranch,
+  repositoriesMatch,
 } from "../src/main/git";
 import type { Project } from "../src/shared/contracts";
 
@@ -57,6 +58,27 @@ beforeEach(() => {
   };
 });
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+test("recognizes the SSH and HTTPS forms commonly mixed on macOS as one repository", () => {
+  expect(
+    repositoriesMatch(
+      "git@github.com:liukunxiaohuozi/tyflow-studio.git",
+      "https://github.com/liukunxiaohuozi/tyflow-studio/",
+    ),
+  ).toBe(true);
+  expect(
+    repositoriesMatch(
+      "ssh://git@git.example.test:22/team/app.git",
+      "https://git.example.test/team/app",
+    ),
+  ).toBe(true);
+  expect(
+    repositoriesMatch(
+      "https://git.example.test/team/app",
+      "https://git.example.test/team/another-app",
+    ),
+  ).toBe(false);
+});
 
 test("records a local delivery commit before push and retries without a duplicate commit", async () => {
   const unavailable = path.join(root, "unavailable.git");
@@ -277,11 +299,21 @@ test("dirty and ignored files are preserved when a fast-forward would overwrite 
   await expect(prepareBranch(local, config, head)).rejects.toThrow(/dirty/);
 });
 
-test("mismatched URLs, offline remotes and cancelled syncs do not report success or change HEAD", async () => {
+test("a configured repository that differs from origin gets an isolated Studio remote", async () => {
   const head = git(local, "rev-parse", "HEAD");
-  await expect(
-    syncRepository({ ...project, repository: seed }),
-  ).rejects.toThrow(/不一致/);
+  const originalOrigin = git(local, "remote", "get-url", "origin");
+  const info = await syncRepository({ ...project, repository: seed });
+  expect(info.syncRemote).toBe("tingyun-studio");
+  expect(info.remoteBranches?.map((branch) => branch.name)).toContain(
+    "tingyun-studio/main",
+  );
+  expect(git(local, "remote", "get-url", "origin")).toBe(originalOrigin);
+  expect(git(local, "remote", "get-url", "tingyun-studio")).toBe(seed);
+  expect(git(local, "rev-parse", "HEAD")).toBe(head);
+});
+
+test("offline remotes and cancelled syncs do not report success or change HEAD", async () => {
+  const head = git(local, "rev-parse", "HEAD");
   const controller = new AbortController();
   controller.abort();
   await expect(
