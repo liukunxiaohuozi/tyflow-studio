@@ -24,7 +24,10 @@ import { notificationForTransition } from "./notifications";
 let main: BrowserWindow | undefined;
 let service: StudioService | undefined;
 let bootstrapServed = false;
-const taskStatuses = new Map<string, import("../shared/contracts").TaskStatus>();
+const taskStatuses = new Map<
+  string,
+  import("../shared/contracts").TaskStatus
+>();
 if (process.platform === "win32") app.setAppUserModelId("com.tyflow.studio");
 if (process.env.STUDIO_TEST_DATA && process.env.STUDIO_SMOKE === "1")
   app.setPath("userData", path.resolve(process.env.STUDIO_TEST_DATA));
@@ -234,7 +237,10 @@ function bind() {
   handle("open-zentao", (type, id) =>
     service!.openZentao(
       z.enum(["story", "task", "bug"]).parse(type),
-      z.string().regex(/^\d{1,12}$/).parse(id),
+      z
+        .string()
+        .regex(/^\d{1,12}$/)
+        .parse(id),
     ),
   );
   handle("zentao-catalog", () => service!.zentaoCatalog());
@@ -267,6 +273,13 @@ function bind() {
             .object({
               planFeedback: z.string().trim().min(1).max(8000).optional(),
               allowDirty: z.boolean().optional(),
+              supplement: z
+                .object({
+                  text: z.string().trim().max(8000).optional(),
+                  assetIds: z.array(uuid).max(30).optional(),
+                })
+                .strict()
+                .optional(),
             })
             .strict()
             .parse(options),

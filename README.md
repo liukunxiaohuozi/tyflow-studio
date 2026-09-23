@@ -66,6 +66,8 @@ npm run pack:portable:mac
 
 2. 用 GitHub Actions：先在本机执行并提交 `portable-bundle/`，再推送 tag 或手动跑 `Desktop builds` workflow。Tag 构建会创建或复用对应 GitHub Release，分别重试上传 Windows x64、macOS arm64、macOS x64 三个 portable zip，并在结束前核对产物；手动构建可从 Artifacts 下载。
 
+执行失败后无需重建任务：详情页可选择“补充信息后重试”，追加复现条件、期望结果、截图、日志或文本附件。Studio 会保留原需求快照、失败日志和已有代码，把补充内容作为独立证据记录，并从当前失败阶段继续。
+
 ```sh
 npm run pack:portable:seed
 git add portable-bundle

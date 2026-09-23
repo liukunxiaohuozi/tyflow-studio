@@ -457,10 +457,20 @@ test("structured agent results redact credentials from nested plans, frozen snap
     result: {
       summary: `Assessment ${secret}`,
       requirements: [
-        { id: "REQ-001", text: `Requirement ${secret}`, priority: "P0", source: "description" },
+        {
+          id: "REQ-001",
+          text: `Requirement ${secret}`,
+          priority: "P0",
+          source: "description",
+        },
       ],
       planSteps: [
-        { id: "PLAN-001", title: `Implement ${secret}`, covers: ["REQ-001"], expectedFiles: ["**"] },
+        {
+          id: "PLAN-001",
+          title: `Implement ${secret}`,
+          covers: ["REQ-001"],
+          expectedFiles: ["**"],
+        },
       ],
       steps: [`Implement without exposing ${secret}`],
       risks: [`Credential ${secret}`],
@@ -558,9 +568,9 @@ test("development freezes approval and creates the requested branch before execu
   expect(calls()[1].args).toEqual(expect.arrayContaining(["--approve-for-me"]));
   expect(calls()[1].args).not.toContain("workspace-write");
   expect(calls()[1].codexHome).toBe(process.env.CODEX_HOME);
-  expect(fs.existsSync(path.join(store.directory, "codex-home", "auth.json"))).toBe(
-    false,
-  );
+  expect(
+    fs.existsSync(path.join(store.directory, "codex-home", "auth.json")),
+  ).toBe(false);
   expect(opened).toEqual([]);
   await expect(service.action(task.id, "accept")).rejects.toThrow();
   await expect(service.action(task.id, "start")).rejects.toThrow();
@@ -635,6 +645,42 @@ test("failed development retries on its frozen branch without recreating it or d
   expect(retried.snapshot).toEqual(failed.snapshot);
   expect(git("branch", "--show-current")).toBe("feature/fixture");
   expect(retried.logs.some((l) => l.level === "error")).toBe(true);
+});
+
+test("failed development accepts supplemental text and evidence before retry without replacing the frozen request", async () => {
+  const task = await ready();
+  configure({ fail: "development" });
+  await service.action(task.id, "develop");
+  const failed = await status(task.id, "failed");
+  const frozen = structuredClone(failed.snapshot);
+  const asset = await service.assets.importImage(
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aNu0AAAAASUVORK5CYII=",
+      "base64",
+    ),
+  );
+  configure({});
+  await service.action(task.id, "retry", {
+    supplement: {
+      text: "筛选条件为最近 30 分钟，控制台报错见新截图。",
+      assetIds: [asset.id],
+    },
+  });
+  const retried = await status(task.id, "waiting-test");
+  expect(retried.snapshot).toEqual(frozen);
+  expect(retried.supplements).toEqual([
+    expect.objectContaining({
+      stage: "development",
+      text: "筛选条件为最近 30 分钟，控制台报错见新截图。",
+      assetIds: [asset.id],
+    }),
+  ]);
+  expect(retried.assets).toContainEqual(asset);
+  expect(calls().at(-1)?.prompt).toContain(
+    "Additional evidence supplied after a failed run",
+  );
+  expect(calls().at(-1)?.prompt).toContain("最近 30 分钟");
+  expect(calls().at(-1)?.prompt).toContain(service.assets.filePath(asset.id));
 });
 
 test("an absent structured agent result fails assessment without creating a usable plan", async () => {

@@ -136,7 +136,8 @@ export interface CheckResult {
   verifies?: string[];
 }
 export interface Evidence {
-  kind: "command" | "log" | "screenshot" | "trace" | "dom" | "coverage" | "manual";
+  kind:
+    "command" | "log" | "screenshot" | "trace" | "dom" | "coverage" | "manual";
   path?: string;
   command?: string;
   exitCode?: number;
@@ -145,7 +146,8 @@ export interface Evidence {
 }
 export interface ChangeReviewFile {
   path: string;
-  changeType: "added" | "modified" | "deleted" | "renamed" | "untracked" | "unknown";
+  changeType:
+    "added" | "modified" | "deleted" | "renamed" | "untracked" | "unknown";
   relatedPlanSteps: string[];
   relatedRequirements: string[];
   relatedTests: string[];
@@ -226,6 +228,13 @@ export interface Task extends TaskInput {
   testRequest?: TestRequest;
   logs: LogEntry[];
   assets: FileAsset[];
+  supplements?: {
+    id: string;
+    stage: Stage;
+    text?: string;
+    assetIds: string[];
+    createdAt: string;
+  }[];
   snapshot?: {
     project: Project;
     branch: BranchConfig;
@@ -321,7 +330,11 @@ export interface StudioAPI {
   taskAction(
     id: string,
     action: TaskAction,
-    options?: { planFeedback?: string; allowDirty?: boolean },
+    options?: {
+      planFeedback?: string;
+      allowDirty?: boolean;
+      supplement?: { text?: string; assetIds?: string[] };
+    },
   ): Promise<Task>;
   openTarget(id: string): Promise<void>;
   exportTask(id: string): Promise<string | null>;

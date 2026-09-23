@@ -9,6 +9,8 @@ import {
   FlaskConical,
   GitBranch,
   Loader2,
+  MessageSquarePlus,
+  Paperclip,
   Play,
   RotateCcw,
   Square,
@@ -21,6 +23,7 @@ import type { StudioAPI, Task, TaskAction } from "../shared/contracts";
 import {
   activeStatuses,
   Notice,
+  Modal,
   PlanDialog,
   Status,
   statusLabel,
@@ -95,6 +98,9 @@ export default function RunView({
   const [filter, setFilter] = useState("all");
   const [follow, setFollow] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [supplementOpen, setSupplementOpen] = useState(false);
+  const [supplementText, setSupplementText] = useState("");
+  const [supplementAssets, setSupplementAssets] = useState<Task["assets"]>([]);
   const logRef = useRef<HTMLDivElement>(null);
   const running = activeStatuses.includes(task.status);
   const tone = toneOf(task.status);
@@ -113,6 +119,53 @@ export default function RunView({
     setBusy(true);
     try {
       onTask(await api.taskAction(task.id, value));
+    } catch (error) {
+      report((error as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function addSupplementFiles() {
+    if (!api) return;
+    setBusy(true);
+    try {
+      const incoming = await api.importFiles("attachment");
+      setSupplementAssets((previous) => {
+        const merged = [...previous];
+        for (const asset of incoming)
+          if (!merged.some((item) => item.id === asset.id)) merged.push(asset);
+        return merged;
+      });
+    } catch (error) {
+      report((error as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function retryWithSupplement() {
+    if (!api) return;
+    if (!supplementText.trim() && !supplementAssets.length) {
+      report(
+        I18nT(
+          "请填写补充信息或添加截图、日志等附件。",
+          "Add supplemental details or attach screenshots or logs.",
+        ),
+        true,
+      );
+      return;
+    }
+    setBusy(true);
+    try {
+      const updated = await api.taskAction(task.id, "retry", {
+        supplement: {
+          text: supplementText.trim() || undefined,
+          assetIds: supplementAssets.map((asset) => asset.id),
+        },
+      });
+      setSupplementOpen(false);
+      setSupplementText("");
+      setSupplementAssets([]);
+      onTask(updated);
     } catch (error) {
       report((error as Error).message, true);
     } finally {
@@ -164,7 +217,10 @@ export default function RunView({
         <Status status={task.status} />
       </header>
 
-      <nav className="run-steps" aria-label={I18nT("流程步骤", "Workflow steps")}>
+      <nav
+        className="run-steps"
+        aria-label={I18nT("流程步骤", "Workflow steps")}
+      >
         {[
           I18nT("录入任务", "Task intake"),
           I18nT("确认执行", "Confirm execution"),
@@ -199,7 +255,7 @@ export default function RunView({
                 "演示已验收；退出演示后临时记录会清除。",
                 "Demo accepted. Temporary records are cleared when you exit.",
               )
-              : task.delivery?.pushedAt
+            : task.delivery?.pushedAt
               ? `${I18nT("本次任务已完成，代码已推送到", "Task completed and pushed to")} ${task.delivery.remote}/${task.delivery.branch} (${task.delivery.commit.slice(0, 8)}).`
               : I18nT(
                   "本次任务已验收，计划、测试与执行记录已保留。",
@@ -557,7 +613,32 @@ export default function RunView({
               <p className="prewrap">
                 {task.snapshot?.description || task.description}
               </p>
-              <AttachmentImages assets={task.assets} api={api} report={report} />
+              <AttachmentImages
+                assets={task.assets}
+                api={api}
+                report={report}
+              />
+              {Boolean(task.supplements?.length) && (
+                <div className="supplement-history">
+                  <small>
+                    {I18nT("失败后补充记录", "Post-failure supplements")}
+                  </small>
+                  {task.supplements?.map((item, index) => (
+                    <div key={item.id} className="supplement-record">
+                      <strong>
+                        #{index + 1} · {item.stage} ·{" "}
+                        {new Date(item.createdAt).toLocaleString()}
+                      </strong>
+                      {item.text && <p className="prewrap">{item.text}</p>}
+                      {item.assetIds.length > 0 && (
+                        <span className="muted">
+                          {I18nT("附件", "Attachments")}: {item.assetIds.length}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div>
               <small>{I18nT("锁定时间", "Frozen at")}</small>
@@ -617,13 +698,17 @@ export default function RunView({
                   <button onClick={edit}>
                     {I18nT("查看需求", "View requirement")}
                   </button>
+                  <button disabled={busy} onClick={() => void action("retry")}>
+                    <RotateCcw size={15} />
+                    {I18nT("直接重试", "Retry now")}
+                  </button>
                   <button
                     className="primary"
                     disabled={busy}
-                    onClick={() => void action("retry")}
+                    onClick={() => setSupplementOpen(true)}
                   >
-                    <RotateCcw size={15} />
-                    {I18nT("重试当前阶段", "Retry current stage")}
+                    <MessageSquarePlus size={15} />
+                    {I18nT("补充信息后重试", "Add details and retry")}
                   </button>
                 </>
               )}
@@ -709,6 +794,82 @@ export default function RunView({
             </button>
           )}
         </div>
+        {supplementOpen && (
+          <Modal
+            title={I18nT("补充信息并继续修复", "Add details and continue")}
+            close={() => !busy && setSupplementOpen(false)}
+          >
+            <div className="supplement-modal">
+              <Notice>
+                {I18nT(
+                  "原需求、失败日志和已有代码都会保留。这里补充复现条件、账号权限、期望结果、控制台信息或新证据，然后从当前失败阶段继续。",
+                  "The original request, failure logs, and code are preserved. Add reproduction conditions, permissions, expected behavior, console output, or new evidence, then continue from the failed stage.",
+                )}
+              </Notice>
+              <label className="field">
+                <span>{I18nT("补充说明", "Additional details")}</span>
+                <textarea
+                  autoFocus
+                  rows={7}
+                  maxLength={8000}
+                  value={supplementText}
+                  onChange={(event) => setSupplementText(event.target.value)}
+                  placeholder={I18nT(
+                    "例如：仅管理员账号复现；时间范围选择最近 30 分钟；控制台报错如下……",
+                    "For example: only admin accounts reproduce it; select the last 30 minutes; console error follows…",
+                  )}
+                />
+              </label>
+              <button disabled={busy} onClick={() => void addSupplementFiles()}>
+                <Paperclip size={15} />
+                {I18nT(
+                  "添加截图、日志或文本",
+                  "Attach screenshots, logs, or text",
+                )}
+              </button>
+              {supplementAssets.length > 0 && (
+                <ul className="supplement-assets">
+                  {supplementAssets.map((asset) => (
+                    <li key={asset.id}>
+                      <span>{asset.name}</span>
+                      <button
+                        className="link-button"
+                        disabled={busy}
+                        onClick={() =>
+                          setSupplementAssets((items) =>
+                            items.filter((item) => item.id !== asset.id),
+                          )
+                        }
+                      >
+                        {I18nT("移除", "Remove")}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="modal-actions">
+                <button
+                  disabled={busy}
+                  onClick={() => setSupplementOpen(false)}
+                >
+                  {I18nT("取消", "Cancel")}
+                </button>
+                <button
+                  className="primary"
+                  disabled={busy}
+                  onClick={() => void retryWithSupplement()}
+                >
+                  {busy ? (
+                    <Loader2 className="spin" size={15} />
+                  ) : (
+                    <RotateCcw size={15} />
+                  )}
+                  {I18nT("保存补充并重试", "Save details and retry")}
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
       </div>
       {dialog && (
         <PlanDialog
