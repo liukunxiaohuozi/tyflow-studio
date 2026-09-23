@@ -67,17 +67,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            create_status=0
-            gh release create "$GITHUB_REF_NAME" \
-              --verify-tag \
-              --title "TingYun Studio $GITHUB_REF_NAME" \
-              --notes "Windows x64 and macOS portable builds for $GITHUB_REF_NAME." || create_status=$?
-            if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-              echo "GitHub Release was not created (gh exit code: $create_status)."
-              exit "${create_status:-1}"
-            fi
-          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "TingYun Studio $GITHUB_REF_NAME" \
+            --notes "Windows x64 and macOS portable builds for $GITHUB_REF_NAME." || true
       - name: Upload packages with retries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -112,7 +105,7 @@ jobs:
         run: |
           shopt -s nullglob
           packages=(release-artifacts/*-portable.zip)
-          published="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
+          published="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.assets[].name')"
           for package in "${packages[@]}"; do
             name="$(basename "$package")"
             if ! grep -Fqx "$name" <<<"$published"; then
