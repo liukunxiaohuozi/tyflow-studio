@@ -22,7 +22,11 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm test
+      - if: runner.os == 'Windows'
+        run: npm test
+      - if: runner.os == 'macOS'
+        name: Run platform-independent tests
+        run: npx jest tests/core.test.ts tests/theme.test.ts tests/bundle.test.ts tests/zentao.test.ts tests/vault.test.ts --runInBand
       - run: npm run scan
       - name: Ensure portable skill bundle
         run: |
