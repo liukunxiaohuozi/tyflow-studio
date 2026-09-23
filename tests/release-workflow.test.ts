@@ -9,6 +9,8 @@ describe("desktop release workflow", () => {
 
   test("publishes packages through an idempotent, retryable release flow", () => {
     expect(workflow).toContain("Ensure GitHub Release exists");
+    expect(workflow).toContain('if ! gh release view "$GITHUB_REF_NAME"');
+    expect(workflow).not.toContain("--generate-notes");
     expect(workflow).toContain("Upload packages with retries");
     expect(workflow).toContain("gh release upload");
     expect(workflow).toContain("--clobber");
