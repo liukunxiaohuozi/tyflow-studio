@@ -1617,6 +1617,17 @@ dialog::backdrop {
 .modal-body {
   padding: 24px;
 }
+.dirty-confirmation {
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+}
+.modal-actions {
+  justify-content: flex-end;
+  margin-top: 22px;
+}
 .doc-meta {
   font-size: 11px;
   color: #72819a;

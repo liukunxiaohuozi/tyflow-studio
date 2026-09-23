@@ -279,10 +279,11 @@ export async function prepareBranch(
   expectedCommit: string,
   expectedTargetCommit?: string,
   signal?: AbortSignal,
+  allowDirty = false,
 ): Promise<{ branch: string; commit: string }> {
   const cwd = await repositoryRoot(directory);
   const info = await inspectRepository(cwd);
-  if (info.dirty)
+  if (info.dirty && !allowDirty)
     throw new Error(
       "Working tree has uncommitted changes (dirty); preserve or commit them before development",
     );

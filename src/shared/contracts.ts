@@ -321,7 +321,7 @@ export interface StudioAPI {
   taskAction(
     id: string,
     action: TaskAction,
-    options?: { planFeedback?: string },
+    options?: { planFeedback?: string; allowDirty?: boolean },
   ): Promise<Task>;
   openTarget(id: string): Promise<void>;
   exportTask(id: string): Promise<string | null>;

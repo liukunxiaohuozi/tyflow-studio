@@ -109,6 +109,10 @@ export default function TaskEditor({
   const [dialog, setDialog] = useState<"plan" | "tests">();
   const [editMode, setEditMode] = useState(false);
   const [planFeedback, setPlanFeedback] = useState("");
+  const [dirtyAction, setDirtyAction] = useState<
+    "analyze" | "develop" | "fix"
+  >();
+  const [dirtyConfirmed, setDirtyConfirmed] = useState(false);
   const pasteLock = useRef(false);
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
   const project = settings.projects.find((p) => p.id === input.projectId);
@@ -384,7 +388,7 @@ export default function TaskEditor({
       requestAnimationFrame(() => descriptionRef.current?.focus());
     }
   }
-  async function save(analyze = false) {
+  async function save(analyze = false, allowDirty = false) {
     if (!api) return;
     setBusy(true);
     try {
@@ -401,7 +405,10 @@ export default function TaskEditor({
       setEdited(false);
       setEditMode(false);
       onTask(saved);
-      if (analyze) onTask(await api.taskAction(saved.id, "analyze"));
+      if (analyze)
+        onTask(
+          await api.taskAction(saved.id, "analyze", { allowDirty }),
+        );
       else report(I18nT("草稿已保存", "Draft saved"));
     } catch (error) {
       report(String((error as Error).message), true);
@@ -409,14 +416,14 @@ export default function TaskEditor({
       setBusy(false);
     }
   }
-  async function develop() {
+  async function develop(allowDirty = false) {
     if (!api || !task) return;
     setBusy(true);
     try {
       const saved = await api.saveTask(input, task.id);
       setEdited(false);
       onTask(saved);
-      onTask(await api.taskAction(saved.id, "develop"));
+      onTask(await api.taskAction(saved.id, "develop", { allowDirty }));
     } catch (error) {
       report(String((error as Error).message), true);
     } finally {
@@ -448,7 +455,7 @@ export default function TaskEditor({
       setBusy(false);
     }
   }
-  async function fix() {
+  async function fix(allowDirty = false) {
     if (!api) return;
     setBusy(true);
     try {
@@ -465,12 +472,31 @@ export default function TaskEditor({
       setEdited(false);
       setEditMode(false);
       onTask(saved);
-      onTask(await api.taskAction(saved.id, "fix"));
+      onTask(await api.taskAction(saved.id, "fix", { allowDirty }));
     } catch (error) {
       report(String((error as Error).message), true);
     } finally {
       setBusy(false);
     }
+  }
+  function continueAction(action: "analyze" | "develop" | "fix") {
+    if (repo?.dirty) {
+      setDirtyConfirmed(false);
+      setDirtyAction(action);
+      return;
+    }
+    if (action === "develop") void develop();
+    else if (action === "fix") void fix();
+    else void save(true);
+  }
+  function confirmDirtyAction() {
+    if (!dirtyAction || !dirtyConfirmed) return;
+    const action = dirtyAction;
+    setDirtyAction(undefined);
+    setDirtyConfirmed(false);
+    if (action === "develop") void develop(true);
+    else if (action === "fix") void fix(true);
+    else void save(true, true);
   }
   const sourceOptions: {
     key: TaskKind;
@@ -1268,11 +1294,14 @@ export default function TaskEditor({
                     Boolean(repoError) ||
                     !native ||
                     (!branchChanged && Boolean(task?.plan?.blockers.length)) ||
-                    Boolean(repo?.dirty) ||
                     !repo ||
                     !input.branch.name
                   }
-                  onClick={() => void (branchChanged ? save(true) : develop())}
+                  onClick={() =>
+                    branchChanged
+                      ? continueAction("analyze")
+                      : continueAction("develop")
+                  }
                 >
                   {busy ? (
                     <Loader2 className="spin" size={16} />
@@ -1296,14 +1325,13 @@ export default function TaskEditor({
                     !input.branch.base ||
                     (input.branch.mode === "new" &&
                       !input.branch.name.trim()) ||
-                    Boolean(repo?.dirty) ||
                     Boolean(selectedLocal?.upstreamMissing) ||
                     Boolean(selectedLocal?.ahead && selectedLocal?.behind) ||
                     (!input.description.trim() &&
                       !assets.some((a) => a.kind === "design"))
                   }
                   onClick={() =>
-                    void (input.kind === "bug" ? fix() : save(true))
+                    continueAction(input.kind === "bug" ? "fix" : "analyze")
                   }
                 >
                   {busy ? (
@@ -1353,6 +1381,58 @@ export default function TaskEditor({
           tab={dialog}
           close={() => setDialog(undefined)}
         />
+      )}
+      {dirtyAction && (
+        <Modal
+          title={I18nT(
+            "检测到未提交代码",
+            "Uncommitted changes detected",
+          )}
+          close={() => {
+            setDirtyAction(undefined);
+            setDirtyConfirmed(false);
+          }}
+        >
+          <Notice tone="error">
+            {I18nT(
+              "当前项目存在未提交修改。继续后，这些修改会保留在工作区，并可能与本次开发结果一起进入检查、提交和推送；切换分支发生冲突时操作仍会停止。",
+              "This project has uncommitted changes. Continuing preserves them, but they may be included with this task in checks, commits, and pushes. The operation will still stop if switching branches conflicts.",
+            )}
+          </Notice>
+          <label className="checkbox dirty-confirmation">
+            <input
+              type="checkbox"
+              checked={dirtyConfirmed}
+              onChange={(event) => setDirtyConfirmed(event.target.checked)}
+            />
+            <span>
+              <strong>
+                {I18nT(
+                  "不管，我就要进行下一步",
+                  "Continue anyway",
+                )}
+              </strong>
+            </span>
+          </label>
+          <div className="actions modal-actions">
+            <button
+              onClick={() => {
+                setDirtyAction(undefined);
+                setDirtyConfirmed(false);
+              }}
+            >
+              {I18nT("关闭", "Close")}
+            </button>
+            <button
+              className="primary"
+              disabled={!dirtyConfirmed}
+              onClick={confirmDirtyAction}
+            >
+              <ArrowRight size={16} />
+              {I18nT("继续下一步", "Continue")}
+            </button>
+          </div>
+        </Modal>
       )}
       {designUpdate && (
         <Modal

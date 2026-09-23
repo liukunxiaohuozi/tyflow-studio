@@ -349,7 +349,7 @@ export class DemoSession {
   }
   private action(
     action: TaskAction,
-    options?: { planFeedback?: string },
+    options?: { planFeedback?: string; allowDirty?: boolean },
   ) {
     if (this.disposed) throw new Error("Demo session closed");
     if (action === "stop") {

@@ -508,7 +508,7 @@ export class StudioService {
   public async action(
     id: string,
     action: TaskAction,
-    options?: { planFeedback?: string },
+    options?: { planFeedback?: string; allowDirty?: boolean },
   ): Promise<Task> {
     const task = this.store.getTask(id);
     canAct(task, action);
@@ -635,12 +635,19 @@ export class StudioService {
           task.snapshot?.directFix ||
           task.snapshot?.plan.summary.startsWith("Bug 快速修复"),
         ));
+    if (options?.allowDirty && stage === "development")
+      this.log(
+        task,
+        "development",
+        "用户已明确确认保留未提交修改并继续；现有修改可能与本次开发一同进入检查、提交和推送。",
+      );
     void this.run(
       task,
       stage,
       controller.signal,
       action === "repair",
       directFix,
+      options?.allowDirty === true,
     )
       .catch((error) => {
         if (this.sealed.has(id)) {
@@ -693,6 +700,7 @@ export class StudioService {
     signal: AbortSignal,
     forceTests = false,
     directFix = false,
+    allowDirty = false,
   ) {
     if (stage === "analysis") {
       await this.recorded(task, stage, signal, () =>
@@ -704,7 +712,7 @@ export class StudioService {
       if (directFix && !task.snapshot)
         await this.prepareDirectFix(task, signal);
       await this.recorded(task, stage, signal, () =>
-        this.develop(task, signal, directFix),
+        this.develop(task, signal, directFix, allowDirty),
       );
       if (task.kind === "bug" && !forceTests) {
         stage = "startup";
@@ -1106,7 +1114,12 @@ export class StudioService {
     }
     return state;
   }
-  private async develop(task: Task, signal: AbortSignal, directFix = false) {
+  private async develop(
+    task: Task,
+    signal: AbortSignal,
+    directFix = false,
+    allowDirty = false,
+  ) {
     if (!task.plan || task.plan.blockers.length)
       throw new Error("请先解决开发计划阻塞项");
     this.assertPassed(
@@ -1137,6 +1150,7 @@ export class StudioService {
         task.baseCommit,
         task.targetCommit,
         signal,
+        allowDirty,
       );
       this.log(
         task,

@@ -267,6 +267,7 @@ function bind() {
         : z
             .object({
               planFeedback: z.string().trim().min(1).max(8000).optional(),
+              allowDirty: z.boolean().optional(),
             })
             .strict()
             .parse(options),

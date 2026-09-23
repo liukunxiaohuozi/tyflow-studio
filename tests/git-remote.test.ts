@@ -297,6 +297,30 @@ test("dirty and ignored files are preserved when a fast-forward would overwrite 
   expect(git(local, "rev-parse", "HEAD")).toBe(head);
   fs.writeFileSync(path.join(local, "base.txt"), "dirty");
   await expect(prepareBranch(local, config, head)).rejects.toThrow(/dirty/);
+  await expect(
+    prepareBranch(local, config, head, undefined, undefined, true),
+  ).rejects.toThrow(/overwritten/);
+  expect(fs.readFileSync(path.join(local, "private.txt"), "utf8")).toBe(
+    "precious",
+  );
+});
+
+test("explicit confirmation continues with non-conflicting uncommitted changes", async () => {
+  const head = git(local, "rev-parse", "HEAD");
+  fs.writeFileSync(path.join(local, "local-work.txt"), "keep me");
+  const config = {
+    mode: "existing" as const,
+    base: "main",
+    name: "main",
+    version: "",
+  };
+  await expect(prepareBranch(local, config, head)).rejects.toThrow(/dirty/);
+  await expect(
+    prepareBranch(local, config, head, undefined, undefined, true),
+  ).resolves.toEqual({ branch: "main", commit: head });
+  expect(fs.readFileSync(path.join(local, "local-work.txt"), "utf8")).toBe(
+    "keep me",
+  );
 });
 
 test("a configured repository that differs from origin gets an isolated Studio remote", async () => {
