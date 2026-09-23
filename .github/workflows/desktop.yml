@@ -63,14 +63,15 @@ jobs:
           pattern: TingYun-Studio-portable-*
           path: release-artifacts
           merge-multiple: true
-      - name: Ensure GitHub Release exists
+      - name: Create draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
+            --draft \
             --verify-tag \
             --title "TingYun Studio $GITHUB_REF_NAME" \
-            --notes "Windows x64 and macOS portable builds for $GITHUB_REF_NAME." || true
+            --notes "Windows x64 and macOS portable builds for $GITHUB_REF_NAME."
       - name: Upload packages with retries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -105,7 +106,7 @@ jobs:
         run: |
           shopt -s nullglob
           packages=(release-artifacts/*-portable.zip)
-          published="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.assets[].name')"
+          published="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .assets[].name")"
           for package in "${packages[@]}"; do
             name="$(basename "$package")"
             if ! grep -Fqx "$name" <<<"$published"; then
@@ -113,3 +114,7 @@ jobs:
               exit 1
             fi
           done
+      - name: Publish verified GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
