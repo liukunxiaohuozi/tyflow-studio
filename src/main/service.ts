@@ -808,7 +808,7 @@ export class StudioService {
         cwd: project.directory,
         signal,
         input: prompt,
-        env: { CODEX_HOME: this.isolatedCodexHome() },
+        env: { CODEX_HOME: this.codexHome() },
         timeout: 30 * 60_000,
         onLine: (line, error) => {
           try {
@@ -850,32 +850,12 @@ export class StudioService {
       throw error;
     }
   }
-  private isolatedCodexHome() {
-    const target = path.join(this.store.directory, "codex-home");
-    fs.mkdirSync(target, { recursive: true });
-    if (process.env.NODE_ENV === "test") return target;
-    const sourceHome =
-      process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
-    const source = path.join(sourceHome, "auth.json");
-    const destination = path.join(target, "auth.json");
-    if (
-      path.resolve(source) !== path.resolve(destination) &&
-      fs.existsSync(source)
-    ) {
-      const sourceTime = fs.statSync(source).mtimeMs;
-      const destinationTime = fs.existsSync(destination)
-        ? fs.statSync(destination).mtimeMs
-        : 0;
-      if (sourceTime > destinationTime) {
-        fs.copyFileSync(source, destination);
-        try {
-          fs.chmodSync(destination, 0o600);
-        } catch {
-          /* Windows ACLs remain scoped to the current user profile. */
-        }
-      }
-    }
-    return target;
+  private codexHome() {
+    // Refresh tokens rotate. Copying auth.json creates competing credential
+    // stores where one successful refresh invalidates the other copy.
+    // User configuration is still excluded by --ignore-user-config and task
+    // sessions remain ephemeral, so only the canonical credential store is shared.
+    return process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
   }
   private context(task: Task, includeWorkflow = true) {
     const settings = this.store.settings();

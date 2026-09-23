@@ -17,6 +17,7 @@ let service: StudioService;
 let observed: Task[];
 let opened: string[];
 const secret = "fixture-private-token-never-persist";
+const originalCodexHome = process.env.CODEX_HOME;
 const credentials = {
   available: () => true,
   has: () => false,
@@ -125,6 +126,12 @@ async function installServerFixture() {
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "tyflow-service-test-"));
+  process.env.CODEX_HOME = path.join(root, "user-codex-home");
+  fs.mkdirSync(process.env.CODEX_HOME);
+  fs.writeFileSync(
+    path.join(process.env.CODEX_HOME, "auth.json"),
+    JSON.stringify({ fixture: "shared-login" }),
+  );
   repository = path.join(root, "repository");
   fixture = path.join(root, "agent");
   fs.mkdirSync(repository);
@@ -199,6 +206,8 @@ afterEach(async () => {
     maxRetries: 10,
     retryDelay: 100,
   });
+  if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = originalCodexHome;
 });
 test("opens a linked ZenTao item under the configured site", async () => {
   const settings = store.settings();
@@ -548,7 +557,10 @@ test("development freezes approval and creates the requested branch before execu
   expect(calls().map((c) => c.stage)).toEqual(["analysis", "development"]);
   expect(calls()[1].args).toEqual(expect.arrayContaining(["--approve-for-me"]));
   expect(calls()[1].args).not.toContain("workspace-write");
-  expect(calls()[1].codexHome).toBe(path.join(store.directory, "codex-home"));
+  expect(calls()[1].codexHome).toBe(process.env.CODEX_HOME);
+  expect(fs.existsSync(path.join(store.directory, "codex-home", "auth.json"))).toBe(
+    false,
+  );
   expect(opened).toEqual([]);
   await expect(service.action(task.id, "accept")).rejects.toThrow();
   await expect(service.action(task.id, "start")).rejects.toThrow();

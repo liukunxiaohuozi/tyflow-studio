@@ -43,7 +43,6 @@ else {
       "repository-sync.json",
       "assets",
       "runs",
-      "codex-home",
     ]) {
       const source = path.join(legacy, name);
       if (fs.existsSync(source))
