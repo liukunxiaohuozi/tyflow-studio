@@ -1,0 +1,48 @@
+name: Desktop builds
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run scan
+      - name: Ensure portable skill bundle
+        run: |
+          if [ ! -f portable-bundle/tyflow/shared/WORKFLOW.md ] || [ ! -f portable-bundle/skills/frontend-test/SKILL.md ]; then
+            echo "Missing portable-bundle/. Run 'npm run pack:portable:seed' locally and commit portable-bundle/."
+            exit 1
+          fi
+        shell: bash
+      - if: runner.os == 'Windows'
+        run: npm run pack:portable:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/smoke-windows.ps1 -Executable './release/win-unpacked/TingYun Studio.exe' -Packaged
+      - if: runner.os == 'macOS'
+        run: npm run pack:portable:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TingYun-Studio-portable-${{ runner.os }}
+          path: |
+            release/*-portable.zip
+          if-no-files-found: error

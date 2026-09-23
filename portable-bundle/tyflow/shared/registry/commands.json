@@ -1,0 +1,60 @@
+{
+  "version": 2,
+  "updatedAt": "2026-08-25",
+  "note": "命令索引必须与 shared/PROJECTS.md 保持一致；AI 在改动项目清单时自行核对两者项目集合一致。路径为占位符的项目，使用前先在 PROJECTS.md 确认本机实际路径。",
+  "projects": {
+    "o11y-apm-ui": {
+      "path": "C:\\Users\\tingyun\\Desktop\\project\\o11y-apm-ui",
+      "packageManager": "npm",
+      "start": "npm run start:dev",
+      "build": "npm run build",
+      "test": "npm run test",
+      "lint": "npm run lint",
+      "typecheck": "npm run tsc",
+      "e2e": null
+    },
+    "explore": {
+      "path": "C:\\Users\\tingyun\\Desktop\\project\\explore",
+      "packageManager": "npm",
+      "start": "npm run start:dev",
+      "build": "npm run build",
+      "test": "npm run test",
+      "lint": "npm run lint",
+      "typecheck": "npm run tsc",
+      "e2e": null
+    },
+    "config": {
+      "path": "C:\\Users\\tingyun\\Desktop\\project\\config",
+      "packageManager": "npm",
+      "start": "npm run start:dev",
+      "build": "npm run build",
+      "test": "npm run test",
+      "testCoverage": "npm run test:coverage",
+      "lint": "npm run lint",
+      "typecheck": "npm run tsc",
+      "e2e": "未配置"
+    },
+    "rum-web": {
+      "path": "<本机 rum-web 仓库路径>",
+      "packageManager": "pnpm",
+      "start": "npm run dev",
+      "build": "npm run build",
+      "test": "npm test",
+      "testCoverage": "npm run test:coverage",
+      "testWatch": "npm run test:watch",
+      "lint": null,
+      "typecheck": "npx tsc --noEmit",
+      "e2e": "未配置"
+    },
+    "tyChatAi": {
+      "path": "C:\\Users\\tingyun\\Desktop\\project\\tyChatAi",
+      "packageManager": "npm",
+      "start": "npm run dev",
+      "build": "npm run build",
+      "test": null,
+      "lint": "npm run lint",
+      "typecheck": "npx tsc --noEmit",
+      "e2e": "未配置"
+    }
+  }
+}
