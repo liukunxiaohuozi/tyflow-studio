@@ -64,6 +64,12 @@ npm run pack:portable:mac
 
 同事解压后双击 `TingYun Studio.app`。
 
+便携包会在注入 Tyflow/Skill 后重新进行 ad-hoc 签名并严格校验应用包完整性。由于没有 Apple Developer 公证，首次下载仍可能被 Gatekeeper 拦截：先将应用拖入「应用程序」，右键选择“打开”；若仍提示“已损坏”，在终端执行：
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/TingYun Studio.app"
+```
+
 2. 用 GitHub Actions：先在本机执行并提交 `portable-bundle/`，再推送 tag 或手动跑 `Desktop builds` workflow。Tag 构建会创建或复用对应 GitHub Release，分别重试上传 Windows x64、macOS arm64、macOS x64 三个 portable zip，并在结束前核对产物；手动构建可从 Artifacts 下载。
 
 执行失败后无需重建任务：详情页可选择“补充信息后重试”，追加复现条件、期望结果、截图、日志或文本附件。Studio 会保留原需求快照、失败日志和已有代码，把补充内容作为独立证据记录，并从当前失败阶段继续。
@@ -81,7 +87,7 @@ git commit -m "Add portable skill bundle for CI"
 
 跑完整 AI 流程时，同事本机仍需 Git、Node.js、已登录的 Codex CLI。
 
-产物在 `release/`。`.github/workflows/desktop.yml` 提供 Windows/macOS 各自在原生 runner 构建的流程；本地验证不代表该远程流程已经执行。未配置开发者证书的包未签名；macOS 正式分发需 Apple Developer 签名与公证，Windows 正式推广建议配置代码签名。不会将任意证书/密码写进源代码。
+产物在 `release/`。`.github/workflows/desktop.yml` 提供 Windows/macOS 各自在原生 runner 构建的流程；本地验证不代表该远程流程已经执行。macOS 便携包会做 ad-hoc 签名和严格完整性校验，但正式分发仍需 Apple Developer 签名与公证；Windows 正式推广建议配置代码签名。不会将任意证书/密码写进源代码。
 
 `npm run dev:web` 可浏览界面，浏览器明确显示「预览模式」且不会执行本机任务。真实持久化、文件和命令能力在桌面客户端内使用。
 

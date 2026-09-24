@@ -36,3 +36,19 @@ test("prefers packaged bundle paths when present", () => {
     path.join(bundle, "skills", "frontend-test", "SKILL.md"),
   );
 });
+
+test("macOS portable bundle is re-signed and strictly verified after bundle injection", () => {
+  const script = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "pack-portable.cjs"),
+    "utf8",
+  );
+  const injection = script.indexOf(
+    'injectBundle(path.join(appPath, "Contents", "Resources"))',
+  );
+  const signing = script.indexOf('signMacApp(appPath)', injection);
+  expect(injection).toBeGreaterThan(-1);
+  expect(signing).toBeGreaterThan(injection);
+  expect(script).toContain(
+    'run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath])',
+  );
+});

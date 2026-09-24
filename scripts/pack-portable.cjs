@@ -118,7 +118,7 @@ function writeReadme(targetDir, platform) {
 - Windows 包不能在 macOS 运行，反之亦然。
 ${
   isMac
-    ? "- 未签名时 macOS 可能提示「无法打开」，需在「隐私与安全性」允许，或右键打开。"
+    ? "- 当前便携包使用 ad-hoc 签名但未做 Apple 公证。若首次下载被系统拦截，请将应用拖入「应用程序」，右键选择「打开」；仍提示损坏时执行：xattr -dr com.apple.quarantine \"/Applications/TingYun Studio.app\"。"
     : "- 未签名时 Windows 可能出现 SmartScreen 提示，选择仍要运行即可。"
 }
 `;
@@ -168,6 +168,20 @@ function injectBundle(resourcesDir) {
   if (fs.existsSync(resourcesBundle))
     fs.rmSync(resourcesBundle, { recursive: true });
   fs.cpSync(bundleRoot, resourcesBundle, { recursive: true });
+}
+
+function signMacApp(appPath) {
+  // Bundle injection changes Contents/Resources after electron-builder runs.
+  // Re-seal the final app so macOS does not classify it as damaged.
+  run("codesign", [
+    "--force",
+    "--deep",
+    "--sign",
+    "-",
+    "--timestamp=none",
+    appPath,
+  ]);
+  run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath]);
 }
 
 function packWindows() {
@@ -233,6 +247,7 @@ function packMac() {
     const appPath = findMacApp(arch);
     if (!appPath) throw new Error(`Missing macOS app for ${arch}`);
     injectBundle(path.join(appPath, "Contents", "Resources"));
+    signMacApp(appPath);
     const stage = path.join(root, "release", `portable-mac-${arch}`);
     if (fs.existsSync(stage)) fs.rmSync(stage, { recursive: true });
     fs.mkdirSync(stage, { recursive: true });
