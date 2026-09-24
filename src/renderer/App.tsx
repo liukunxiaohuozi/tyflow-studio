@@ -21,11 +21,11 @@ import RunView from "./RunView";
 import Records from "./Records";
 import SettingsView from "./SettingsView";
 const demoVideoZhUrl = new URL(
-  "./assets/TingYun-Studio-demo-zh.webm",
+  "./assets/TingYun-Studio-demo-zh.mp4",
   import.meta.url,
 ).href;
 const demoVideoEnUrl = new URL(
-  "./assets/TingYun-Studio-demo-en.webm",
+  "./assets/TingYun-Studio-demo-en.mp4",
   import.meta.url,
 ).href;
 const previewBootstrap: Bootstrap = {
