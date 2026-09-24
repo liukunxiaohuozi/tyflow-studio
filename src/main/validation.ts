@@ -162,6 +162,7 @@ export function canAct(task: Task, action: TaskAction) {
     develop: ["ready"],
     test: ["waiting-test"],
     start: ["waiting-review", "review"],
+    pause: ["developing"],
     stop: ["analyzing", "developing", "testing", "starting"],
     terminate: [
       "draft",
@@ -185,6 +186,8 @@ export function canAct(task: Task, action: TaskAction) {
     throw new Error("直接修复仅适用于 Bug 任务");
   if (action === "fix" && task.snapshot)
     throw new Error("已进入执行阶段的 Bug 请从当前失败阶段重试");
+  if (action === "pause" && task.kind !== "bug")
+    throw new Error("暂停补充仅适用于正在修复的 Bug");
   if (action === "develop" && (!task.plan || task.plan.blockers.length))
     throw new Error("请先完成评估并解决计划中的阻塞项");
   if (

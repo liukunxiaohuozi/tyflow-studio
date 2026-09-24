@@ -2,7 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { findCommands, resolveCommand, runCommand } from "../src/main/process";
+import {
+  executablePath,
+  findCommands,
+  resolveCommand,
+  runCommand,
+} from "../src/main/process";
 
 jest.setTimeout(15000);
 let root: string;
@@ -107,6 +112,29 @@ test("unrecognized shell scripts cannot be used as executable configuration", ()
   const file = path.join(root, "arbitrary.cmd");
   fs.writeFileSync(file, "@echo off");
   expect(() => resolveCommand(file)).toThrow(/不执行任意 shell 脚本/);
+});
+
+test("macOS child PATH includes the configured Agent's Node bin and common GUI-missing locations", () => {
+  const home = "/Users/fixture";
+  const nodeBin = path.posix.join(
+    home,
+    ".nvm",
+    "versions",
+    "node",
+    "v22.21.0",
+    "bin",
+  );
+  const value = executablePath(
+    path.posix.join(nodeBin, "codex"),
+    "/usr/bin:/bin",
+    "darwin",
+    home,
+  ).split(":");
+  expect(value[0]).toBe(nodeBin);
+  expect(value).toEqual(
+    expect.arrayContaining([nodeBin, "/usr/bin", "/opt/homebrew/bin"]),
+  );
+  expect(value.filter((entry) => entry === nodeBin)).toHaveLength(1);
 });
 
 (process.platform === "win32" ? test : test.skip)("Windows CLI discovery skips extensionless Unix shims and preserves PATH priority", () => {

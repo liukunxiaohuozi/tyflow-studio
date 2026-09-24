@@ -116,6 +116,33 @@ test("records a local delivery commit before push and retries without a duplicat
   );
 });
 
+test("passes the Studio runtime environment through git commit hooks", async () => {
+  const hooks = path.join(local, ".git", "hooks");
+  const hook = path.join(hooks, "pre-commit");
+  fs.writeFileSync(
+    hook,
+    '#!/bin/sh\n[ "$TYFLOW_RUNTIME_TEST" = "available" ] || { echo "runtime environment missing" >&2; exit 23; }\n',
+  );
+  fs.chmodSync(hook, 0o755);
+  fs.writeFileSync(path.join(local, "hooked.txt"), "ready");
+
+  const delivered = await commitAndPush(
+    project,
+    undefined,
+    "main",
+    "deliver through hook",
+    { name: "Fixture", email: "fixture@example.invalid" },
+    undefined,
+    undefined,
+    { TYFLOW_RUNTIME_TEST: "available" },
+  );
+
+  expect(delivered.commit).toBe(git(local, "rev-parse", "HEAD"));
+  expect(git(upstream, "rev-parse", "refs/heads/main")).toBe(
+    delivered.commit,
+  );
+});
+
 test("fetches every remote branch without letting conflicting remote tags block synchronization", async () => {
   const head = git(local, "rev-parse", "HEAD");
   git(seed, "branch", "feature/remote-only");

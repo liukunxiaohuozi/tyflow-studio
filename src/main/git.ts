@@ -626,6 +626,7 @@ export async function commitAndPush(
     branch: string;
     remote: string;
   }) => void,
+  runtimeEnv: NodeJS.ProcessEnv = {},
 ): Promise<{ commit: string; branch: string; remote: string }> {
   safeReference(branch);
   const subject = message
@@ -637,6 +638,7 @@ export async function commitAndPush(
     project,
     secret,
     async (cwd, repository, env, prefix) => {
+      const executionEnv = { ...runtimeEnv, ...env };
       let info = await inspectRepository(cwd);
       if (info.branch !== branch)
         throw new Error(
@@ -659,7 +661,12 @@ export async function commitAndPush(
             ? ["-c", `user.email=${developer.email.trim()}`]
             : []),
         ];
-        await run(cwd, [...identity, "commit", "-m", subject], env, 120000);
+        await run(
+          cwd,
+          [...identity, "commit", "-m", subject],
+          executionEnv,
+          120000,
+        );
         info = await inspectRepository(cwd);
         commit = info.commit;
       }
@@ -687,7 +694,7 @@ export async function commitAndPush(
           repository,
           `HEAD:refs/heads/${branch}`,
         ],
-        env,
+        executionEnv,
         120000,
       );
       if (remoteNames.includes(remote)) {

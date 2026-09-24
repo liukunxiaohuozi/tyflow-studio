@@ -303,6 +303,7 @@ export type TaskAction =
   | "develop"
   | "test"
   | "start"
+  | "pause"
   | "stop"
   | "terminate"
   | "accept"

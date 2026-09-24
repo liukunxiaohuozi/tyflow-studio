@@ -713,10 +713,45 @@ test("failed development accepts supplemental text and evidence before retry wit
   ]);
   expect(retried.assets).toContainEqual(asset);
   expect(calls().at(-1)?.prompt).toContain(
-    "Additional evidence supplied after a failed run",
+    "Additional evidence supplied after a paused or failed run",
   );
   expect(calls().at(-1)?.prompt).toContain("最近 30 分钟");
   expect(calls().at(-1)?.prompt).toContain(service.assets.filePath(asset.id));
+});
+
+test("an active Bug repair can pause for evidence and resume without becoming a failure", async () => {
+  configure({ delay: 10000 });
+  const task = create({
+    kind: "bug",
+    description: "筛选条件变更后页面未刷新，请定位并修复。",
+  });
+  await service.action(task.id, "fix");
+  await until(
+    () =>
+      store.getTask(task.id).status === "developing" && calls().length === 1,
+  );
+
+  const paused = await service.action(task.id, "pause");
+  expect(paused.status).toBe("stopped");
+  expect(paused.error).toBeUndefined();
+  expect(
+    paused.logs.some((log) => log.message.includes("等待补充信息后继续")),
+  ).toBe(true);
+
+  configure({});
+  await service.action(task.id, "retry", {
+    supplement: { text: "只有选择最近 30 分钟后才能复现。" },
+  });
+  const resumed = await status(task.id, "waiting-review");
+  expect(resumed.supplements).toEqual([
+    expect.objectContaining({
+      stage: "development",
+      text: "只有选择最近 30 分钟后才能复现。",
+    }),
+  ]);
+  expect(resumed.logs.some((log) => log.level === "error")).toBe(false);
+  expect(calls()).toHaveLength(2);
+  expect(calls().at(-1)?.prompt).toContain("最近 30 分钟");
 });
 
 test("an absent structured agent result fails assessment without creating a usable plan", async () => {

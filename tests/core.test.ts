@@ -139,6 +139,26 @@ describe("security and state invariants", () => {
       ),
     ).not.toThrow();
   });
+  test("only an actively developing Bug can be paused for supplemental evidence", () => {
+    const task: Task = {
+      ...input,
+      kind: "bug",
+      status: "developing",
+      stage: "development",
+      id: "paused-bug",
+      createdAt: "now",
+      updatedAt: "now",
+      planRevision: 0,
+      checks: [],
+      logs: [],
+      assets: [],
+    };
+    expect(() => canAct(task, "pause")).not.toThrow();
+    expect(() => canAct({ ...task, kind: "text" }, "pause")).toThrow(
+      /仅适用于.*Bug/,
+    );
+    expect(() => canAct({ ...task, status: "stopped" }, "pause")).toThrow();
+  });
   test("notifies only when a task enters a human-attention milestone", () => {
     const task: Task = {
       ...input,

@@ -104,6 +104,9 @@ export default function RunView({
   const [follow, setFollow] = useState(true);
   const [busy, setBusy] = useState(false);
   const [supplementOpen, setSupplementOpen] = useState(false);
+  const [supplementOrigin, setSupplementOrigin] = useState<
+    "paused" | "failed"
+  >("failed");
   const [startConfirmOpen, setStartConfirmOpen] = useState(false);
   const [supplementText, setSupplementText] = useState("");
   const [supplementAssets, setSupplementAssets] = useState<Task["assets"]>([]);
@@ -146,6 +149,22 @@ export default function RunView({
           if (!merged.some((item) => item.id === asset.id)) merged.push(asset);
         return merged;
       });
+    } catch (error) {
+      report((error as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function pauseAndSupplement() {
+    if (!api) return;
+    setBusy(true);
+    try {
+      const updated = await api.taskAction(task.id, "pause");
+      onTask(updated);
+      setSupplementOrigin("paused");
+      setSupplementText("");
+      setSupplementAssets([]);
+      setSupplementOpen(true);
     } catch (error) {
       report((error as Error).message, true);
     } finally {
@@ -641,7 +660,7 @@ export default function RunView({
               {Boolean(task.supplements?.length) && (
                 <div className="supplement-history">
                   <small>
-                    {I18nT("失败后补充记录", "Post-failure supplements")}
+                    {I18nT("补充记录", "Supplement history")}
                   </small>
                   {task.supplements?.map((item, index) => (
                     <div key={item.id} className="supplement-record">
@@ -696,10 +715,15 @@ export default function RunView({
                 "Demo mode; no real project or testing skill is invoked.",
               )
             : running
-              ? I18nT(
-                  "正在本地执行，可以随时停止。",
-                  "Running locally. You can stop execution at any time.",
-                )
+              ? task.kind === "bug" && task.stage === "development"
+                ? I18nT(
+                    "正在本地修复，可暂停补充信息或停止执行。",
+                    "Fixing locally. You can pause to add details or stop execution.",
+                  )
+                : I18nT(
+                    "正在本地执行，可以随时停止。",
+                    "Running locally. You can stop execution at any time.",
+                  )
               : I18nT(
                   "执行记录会自动保留在本机。",
                   "Execution records are automatically retained on this device.",
@@ -707,10 +731,22 @@ export default function RunView({
         </span>
         <div className="actions">
           {running ? (
-            <button disabled={busy} onClick={() => void action("stop")}>
-              <Square size={15} />
-              {I18nT("停止执行", "Stop")}
-            </button>
+            <>
+              {task.kind === "bug" && task.stage === "development" && (
+                <button
+                  className="primary"
+                  disabled={busy}
+                  onClick={() => void pauseAndSupplement()}
+                >
+                  <MessageSquarePlus size={15} />
+                  {I18nT("暂停并补充", "Pause and add details")}
+                </button>
+              )}
+              <button disabled={busy} onClick={() => void action("stop")}>
+                <Square size={15} />
+                {I18nT("停止执行", "Stop")}
+              </button>
+            </>
           ) : (
             <>
               {["failed", "stopped"].includes(task.status) && (
@@ -725,7 +761,14 @@ export default function RunView({
                   <button
                     className="primary"
                     disabled={busy}
-                    onClick={() => setSupplementOpen(true)}
+                    onClick={() => {
+                      setSupplementOrigin(
+                        task.status === "stopped" && !task.error
+                          ? "paused"
+                          : "failed",
+                      );
+                      setSupplementOpen(true);
+                    }}
                   >
                     <MessageSquarePlus size={15} />
                     {I18nT("补充信息后重试", "Add details and retry")}
@@ -853,10 +896,15 @@ export default function RunView({
           >
             <div className="supplement-modal">
               <Notice>
-                {I18nT(
-                  "原需求、失败日志和已有代码都会保留。这里补充复现条件、账号权限、期望结果、控制台信息或新证据，然后从当前失败阶段继续。",
-                  "The original request, failure logs, and code are preserved. Add reproduction conditions, permissions, expected behavior, console output, or new evidence, then continue from the failed stage.",
-                )}
+                {supplementOrigin === "paused"
+                  ? I18nT(
+                      "修复已暂停，原需求、已有代码、执行快照和日志都会保留。补充复现条件、期望结果或新证据后，将从当前修复阶段自动继续。",
+                      "The fix is paused. The request, code, snapshot, and logs are preserved. Add evidence and the current repair stage will continue automatically.",
+                    )
+                  : I18nT(
+                      "原需求、失败日志和已有代码都会保留。这里补充复现条件、账号权限、期望结果、控制台信息或新证据，然后从当前失败阶段继续。",
+                      "The original request, failure logs, and code are preserved. Add reproduction conditions, permissions, expected behavior, console output, or new evidence, then continue from the failed stage.",
+                    )}
               </Notice>
               <label className="field">
                 <span>{I18nT("补充说明", "Additional details")}</span>
@@ -916,7 +964,9 @@ export default function RunView({
                   ) : (
                     <RotateCcw size={15} />
                   )}
-                  {I18nT("保存补充并重试", "Save details and retry")}
+                  {supplementOrigin === "paused"
+                    ? I18nT("确定并继续修复", "Continue fixing")
+                    : I18nT("保存补充并重试", "Save details and retry")}
                 </button>
               </div>
             </div>

@@ -8,6 +8,55 @@ export interface Command {
   args: string[];
   env?: NodeJS.ProcessEnv;
 }
+function childDirectories(
+  root: string,
+  suffix: string[],
+  paths: typeof path.posix | typeof path.win32 = path,
+) {
+  try {
+    return fs
+      .readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => paths.join(root, entry.name, ...suffix));
+  } catch {
+    return [];
+  }
+}
+export function executablePath(
+  preferredCommand = "",
+  current = process.env.PATH ?? "",
+  platform = process.platform,
+  home = os.homedir(),
+) {
+  const separator = platform === "win32" ? ";" : ":";
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const preferred = preferredCommand.trim();
+  const directories = [
+    paths.isAbsolute(preferred) ? paths.dirname(preferred) : "",
+    ...current.split(separator),
+  ];
+  if (platform === "darwin")
+    directories.push(
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      paths.join(home, ".npm-global", "bin"),
+      paths.join(home, ".volta", "bin"),
+      paths.join(home, ".local", "bin"),
+      paths.join(home, ".asdf", "shims"),
+      paths.join(home, ".local", "share", "mise", "shims"),
+      ...childDirectories(
+        paths.join(home, ".nvm", "versions", "node"),
+        ["bin"],
+        paths,
+      ),
+      ...childDirectories(
+        paths.join(home, ".fnm", "node-versions"),
+        ["installation", "bin"],
+        paths,
+      ),
+    );
+  return [...new Set(directories.filter(Boolean))].join(separator);
+}
 export function which(name: string): string | undefined {
   return findCommands(name)[0];
 }
