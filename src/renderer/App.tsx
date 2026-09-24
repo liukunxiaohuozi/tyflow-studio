@@ -20,7 +20,14 @@ import TaskEditor from "./TaskEditor";
 import RunView from "./RunView";
 import Records from "./Records";
 import SettingsView from "./SettingsView";
-import DemoWorkspace from "./DemoWorkspace";
+const demoVideoZhUrl = new URL(
+  "./assets/TingYun-Studio-demo-zh.webm",
+  import.meta.url,
+).href;
+const demoVideoEnUrl = new URL(
+  "./assets/TingYun-Studio-demo-en.webm",
+  import.meta.url,
+).href;
 const previewBootstrap: Bootstrap = {
   settings: {
     developer: { name: "", email: "", defaultProject: "explore" },
@@ -291,14 +298,11 @@ export default function App() {
           <button
             className={demo ? "selected" : ""}
             onClick={() => {
-              setView("task");
-              setDemo((value) => !value);
+              setDemo(true);
             }}
           >
             <CirclePlay size={18} />
-            {demo
-              ? I18nT("退出演示", "Exit demo")
-              : I18nT("演示示例", "Demo example")}
+            {I18nT("演示示例", "Demo example")}
           </button>
           <div className="device-state">
             <span
@@ -314,7 +318,7 @@ export default function App() {
       <div className="main-shell">
         <main
           className={
-            demo || (view === "task" && !showRun)
+            view === "task" && !showRun
               ? "task-intake"
               : view === "task" && showRun
                 ? "compact-workspace run-workspace"
@@ -324,8 +328,7 @@ export default function App() {
           }
         >
           <div className="content">
-            {demo && <DemoWorkspace settings={data.settings} report={report} />}
-            <div hidden={demo}>
+            <div>
               {!window.studio && (
                 <Notice>
                   <strong>
@@ -411,6 +414,35 @@ export default function App() {
             {I18nT("新建任务", "New task")}
           </button>
         </Modal>
+      )}
+      {demo && (
+        <div
+          className="demo-video-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label={I18nT("TingYun Studio 演示视频", "TingYun Studio demo video")}
+        >
+          <div className="demo-video-dialog">
+            <button
+              className="demo-video-close"
+              aria-label={I18nT("关闭演示视频", "Close demo video")}
+              title={I18nT("关闭", "Close")}
+              onClick={() => setDemo(false)}
+            >
+              <X size={22} />
+            </button>
+            <video
+              src={
+                data.settings.language === "en-US"
+                  ? demoVideoEnUrl
+                  : demoVideoZhUrl
+              }
+              autoPlay
+              controls
+              playsInline
+            />
+          </div>
+        </div>
       )}
       {toast && (
         <div
