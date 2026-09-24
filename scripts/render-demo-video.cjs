@@ -19,4 +19,4 @@ app.whenReady().then(async () => {
     query: { out: output, lang: language },
   });
 });
-setTimeout(() => { console.error('Video render timed out'); app.exit(2); }, 150000);
+setTimeout(() => { console.error('Video render timed out'); app.exit(2); }, 420000);
