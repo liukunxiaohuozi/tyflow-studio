@@ -280,18 +280,54 @@ test("bug fix calls Codex directly on the selected branch without a planning inv
   expect(task.autoTest).toBe(false);
   expect(task.branch.version).toBe("");
   await service.action(task.id, "fix");
-  const fixed = await status(task.id, "review");
+  const fixed = await status(task.id, "waiting-review");
   expect(fixed.plan?.testCases).toEqual([
     expect.objectContaining({ id: "BUG-REGRESSION" }),
   ]);
   expect(fixed.snapshot?.branch).toEqual(task.branch);
   expect(calls().map((call) => call.stage)).toEqual(["development"]);
-  expect(opened).toEqual([url]);
+  expect(opened).toEqual([]);
   expect(calls()[0].prompt).toContain("direct Bug repair");
   expect(calls()[0].prompt).not.toContain("Tyflow workflow");
   expect(fixed.logs.some((log) => log.message.includes("直接调用 Codex"))).toBe(
     true,
   );
+  await service.action(task.id, "start");
+  await status(task.id, "review");
+  expect(opened).toEqual([url]);
+});
+
+test("bug fix with runtime-only unexecuted checks waits for manual review instead of failing", async () => {
+  configure({
+    result: {
+      summary: "Code fix complete; runtime review remains",
+      checks: [
+        {
+          name: "static check",
+          state: "passed",
+          detail: "lint passed",
+        },
+        {
+          name: "real browser review",
+          state: "unexecuted",
+          detail: "requires the running application",
+        },
+      ],
+    },
+  });
+  const task = create({ kind: "bug", description: "runtime bug" });
+  await service.action(task.id, "fix");
+  const fixed = await status(task.id, "waiting-review");
+  expect(fixed.error).toBeUndefined();
+  expect(fixed.checks.map((check) => check.state)).toEqual([
+    "passed",
+    "unexecuted",
+  ]);
+  expect(
+    fixed.logs.some((log) =>
+      log.message.includes("运行时检查等待人工验证"),
+    ),
+  ).toBe(true);
 });
 
 test("assessment invokes read-only Codex, passes schema and exact target commit, and persists the plan", async () => {

@@ -31,6 +31,16 @@ export function notificationForTransition(
           title: "开发完成",
           body: `“${task.title}”已完成开发，等待启动自动化测试。`,
         };
+  if (task.status === "waiting-review")
+    return language === "en-US"
+      ? {
+          title: "Development complete",
+          body: `“${task.title}” is ready for manual runtime review.`,
+        }
+      : {
+          title: "开发修复完成",
+          body: `“${task.title}”已完成开发，可启动项目或在现有环境中自行验证。`,
+        };
   if (task.status === "review")
     return language === "en-US"
       ? {

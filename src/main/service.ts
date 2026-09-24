@@ -605,6 +605,23 @@ export class StudioService {
           ? snapshot.branch.name
           : snapshot.branch.base;
       task.error = undefined;
+      if (task.status === "waiting-review") {
+        task.checks = task.checks.map((check) =>
+          check.state === "unexecuted"
+            ? {
+                ...check,
+                state: "passed" as const,
+                detail: `${check.detail}\n用户已在现有运行环境中完成人工验证并确认验收。`,
+              }
+            : check,
+        );
+        this.log(
+          task,
+          "startup",
+          "用户选择使用已启动的项目自行验证，并确认运行时待验证项通过。",
+          "success",
+        );
+      }
       const diffReview = await this.diffGate(task);
       this.assertPassed(
         validateChangeReview(diffReview),
@@ -793,7 +810,16 @@ export class StudioService {
         this.develop(task, signal, directFix, allowDirty),
       );
       if (task.kind === "bug" && !forceTests) {
-        stage = "startup";
+        task.stage = "startup";
+        task.status = "waiting-review";
+        this.log(
+          task,
+          "startup",
+          "开发修复已完成，等待选择由 Studio 启动项目验证，或使用已运行的项目自行验证。",
+          "success",
+        );
+        this.publish(task);
+        return;
       } else if (!task.autoTest && !forceTests) {
         task.status = "waiting-test";
         this.publish(task);
@@ -1278,7 +1304,11 @@ export class StudioService {
     );
     this.log(task, "development", result.summary);
     task.checks = result.checks;
-    if (result.checks.some((c) => c.state !== "passed")) {
+    if (
+      result.checks.some(
+        (c) => c.state === "failed" || c.state === "blocked",
+      )
+    ) {
       this.publish(task);
       throw new Error("开发阶段存在失败或未完成检查，请查看日志后修复并重试");
     }
@@ -1288,7 +1318,17 @@ export class StudioService {
       validateChangeReview(diffReview),
       "开发改动未通过差异审查，请检查计划外或未覆盖改动",
     );
-    this.log(task, "development", "开发执行完成，进入测试安排。", "success");
+    const pending = result.checks.filter(
+      (check) => check.state === "unexecuted",
+    ).length;
+    this.log(
+      task,
+      "development",
+      pending
+        ? `开发执行完成，${pending} 项运行时检查等待人工验证。`
+        : "开发执行完成，进入测试安排。",
+      "success",
+    );
     this.publish(task);
   }
   private async test(task: Task, signal: AbortSignal) {
@@ -1478,7 +1518,12 @@ export class StudioService {
     this.log(task, "test", "本次必要检查已通过。", "success");
   }
   private async start(task: Task, signal: AbortSignal) {
-    if (!task.checks.length || task.checks.some((c) => c.state !== "passed"))
+    if (
+      !task.checks.length ||
+      task.checks.some(
+        (c) => c.state === "failed" || c.state === "blocked",
+      )
+    )
       throw new Error("请先完成自动化测试");
     const diffReview = await this.diffGate(task);
     this.assertPassed(
@@ -1614,7 +1659,10 @@ export class StudioService {
   }
   public async openTarget(id: string) {
     const task = this.store.getTask(id);
-    if (!["review", "accepted"].includes(task.status) || !task.snapshot)
+    if (
+      !["waiting-review", "review", "accepted"].includes(task.status) ||
+      !task.snapshot
+    )
       throw new Error("尚未完成启动验证");
     await this.openUrl(
       safeTargetUrl(task.runtime?.targetUrl ?? task.snapshot.project.targetUrl),

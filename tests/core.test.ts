@@ -126,6 +126,18 @@ describe("security and state invariants", () => {
         "accept",
       ),
     ).toThrow();
+    expect(() =>
+      canAct(
+        {
+          ...task,
+          status: "waiting-review",
+          checks: [
+            { name: "runtime", state: "unexecuted", detail: "manual review" },
+          ],
+        },
+        "accept",
+      ),
+    ).not.toThrow();
   });
   test("notifies only when a task enters a human-attention milestone", () => {
     const task: Task = {
@@ -144,6 +156,15 @@ describe("security and state invariants", () => {
       body: "“Requirement”已完成开发，等待启动自动化测试。",
     });
     expect(notificationForTransition("waiting-test", task)).toBeUndefined();
+    expect(
+      notificationForTransition("developing", {
+        ...task,
+        status: "waiting-review",
+      }),
+    ).toEqual({
+      title: "开发修复完成",
+      body: "“Requirement”已完成开发，可启动项目或在现有环境中自行验证。",
+    });
     expect(
       notificationForTransition("testing", { ...task, status: "review" }),
     ).toEqual({

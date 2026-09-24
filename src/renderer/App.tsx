@@ -180,6 +180,7 @@ export default function App() {
       [
         "developing",
         "waiting-test",
+        "waiting-review",
         "testing",
         "starting",
         "review",

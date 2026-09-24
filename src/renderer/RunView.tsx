@@ -34,7 +34,12 @@ import AttachmentImages from "./AttachmentImages";
 function toneOf(status: Task["status"]) {
   if (status === "accepted") return "success";
   if (status === "failed") return "danger";
-  if (status === "stopped" || status === "waiting-test") return "warning";
+  if (
+    status === "stopped" ||
+    status === "waiting-test" ||
+    status === "waiting-review"
+  )
+    return "warning";
   if (activeStatuses.includes(status)) return "active";
   return "neutral";
 }
@@ -99,6 +104,7 @@ export default function RunView({
   const [follow, setFollow] = useState(true);
   const [busy, setBusy] = useState(false);
   const [supplementOpen, setSupplementOpen] = useState(false);
+  const [startConfirmOpen, setStartConfirmOpen] = useState(false);
   const [supplementText, setSupplementText] = useState("");
   const [supplementAssets, setSupplementAssets] = useState<Task["assets"]>([]);
   const logRef = useRef<HTMLDivElement>(null);
@@ -124,6 +130,10 @@ export default function RunView({
     } finally {
       setBusy(false);
     }
+  }
+  async function confirmStart() {
+    setStartConfirmOpen(false);
+    await action("start");
   }
   async function addSupplementFiles() {
     if (!api) return;
@@ -185,7 +195,9 @@ export default function RunView({
           { key: "startup", label: I18nT("启动与验收", "Launch and accept") },
         ];
   const stageIndex =
-    task.status === "accepted" || task.status === "review"
+    task.status === "accepted" ||
+    task.status === "review" ||
+    task.status === "waiting-review"
       ? stages.length - 1
       : Math.max(
           0,
@@ -235,6 +247,14 @@ export default function RunView({
       </nav>
 
       {task.error && <Notice tone="error">{task.error}</Notice>}
+      {task.status === "waiting-review" && (
+        <Notice>
+          {I18nT(
+            "开发已完成，代码检查已通过；运行时效果等待你验证。可以由 Studio 启动项目，也可以使用已经启动的项目自行验证。这个状态不是执行错误。",
+            "Development is complete and code checks passed. Runtime behavior awaits your review. Start the project with Studio or review an already-running project. This is not an execution failure.",
+          )}
+        </Notice>
+      )}
       {task.status === "review" && (
         <Notice tone="success">
           {simulated
@@ -734,19 +754,19 @@ export default function RunView({
                   {I18nT("自动化测试介入", "Run automated testing")}
                 </button>
               )}
-              {task.status === "review" &&
-                task.checks.length > 0 &&
-                task.checks.every((x) => x.state === "passed") && (
+              {task.status === "waiting-review" && (
                   <button
                     className="primary"
                     disabled={busy}
-                    onClick={() => void action("start")}
+                    onClick={() => setStartConfirmOpen(true)}
                   >
                     <Play size={15} />
-                    {I18nT("启动项目", "Start project")}
+                    {I18nT("启动项目进入验证", "Start project for review")}
                   </button>
                 )}
-              {["review", "accepted"].includes(task.status) && (
+              {["waiting-review", "review", "accepted"].includes(
+                task.status,
+              ) && (
                 <button
                   onClick={() =>
                     api
@@ -758,7 +778,7 @@ export default function RunView({
                   {I18nT("打开开发页面", "Open development page")}
                 </button>
               )}
-              {task.status === "review" && (
+              {["waiting-review", "review"].includes(task.status) && (
                 <button
                   className="primary"
                   disabled={busy}
@@ -794,6 +814,38 @@ export default function RunView({
             </button>
           )}
         </div>
+        {startConfirmOpen && (
+          <Modal
+            title={I18nT(
+              "启动项目进入验证？",
+              "Start the project for review?",
+            )}
+            close={() => setStartConfirmOpen(false)}
+          >
+            <p>
+              {I18nT(
+                "Studio 将运行该项目配置的启动命令并打开开发页面。如果项目已经由你启动，可以暂不启动并直接在现有页面中验证。",
+                "Studio will run the configured start command and open the development page. If the project is already running, skip this and review it in the existing page.",
+              )}
+            </p>
+            <div className="modal-actions">
+              <button
+                disabled={busy}
+                onClick={() => setStartConfirmOpen(false)}
+              >
+                {I18nT("暂不启动", "Not now")}
+              </button>
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() => void confirmStart()}
+              >
+                <Play size={15} />
+                {I18nT("确定并启动", "Start now")}
+              </button>
+            </div>
+          </Modal>
+        )}
         {supplementOpen && (
           <Modal
             title={I18nT("补充信息并继续修复", "Add details and continue")}

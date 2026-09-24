@@ -5,6 +5,7 @@ export type TaskStatus =
   | "ready"
   | "developing"
   | "waiting-test"
+  | "waiting-review"
   | "testing"
   | "starting"
   | "review"

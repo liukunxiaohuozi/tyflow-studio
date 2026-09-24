@@ -161,7 +161,7 @@ export function canAct(task: Task, action: TaskAction) {
     analyze: ["draft", "ready", "failed", "stopped"],
     develop: ["ready"],
     test: ["waiting-test"],
-    start: ["review"],
+    start: ["waiting-review", "review"],
     stop: ["analyzing", "developing", "testing", "starting"],
     terminate: [
       "draft",
@@ -174,7 +174,7 @@ export function canAct(task: Task, action: TaskAction) {
       "review",
       "failed",
     ],
-    accept: ["review"],
+    accept: ["waiting-review", "review"],
     retry: ["failed", "stopped"],
   };
   if (!allowed[action]?.includes(task.status))
@@ -189,7 +189,8 @@ export function canAct(task: Task, action: TaskAction) {
     throw new Error("请先完成评估并解决计划中的阻塞项");
   if (
     action === "accept" &&
-    (!task.checks.length || task.checks.some((c) => c.state !== "passed"))
+    (!task.checks.length ||
+      task.checks.some((c) => c.state === "failed" || c.state === "blocked"))
   )
     throw new Error("必要验证尚未全部通过");
 }

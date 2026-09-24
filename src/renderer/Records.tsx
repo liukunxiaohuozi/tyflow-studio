@@ -53,7 +53,9 @@ export default function Records({
     },
     {
       value: tasks.filter((t) =>
-        ["ready", "review", "waiting-test"].includes(t.status),
+        ["ready", "review", "waiting-test", "waiting-review"].includes(
+          t.status,
+        ),
       ).length,
       label: I18nT("待处理", "Needs attention"),
     },
