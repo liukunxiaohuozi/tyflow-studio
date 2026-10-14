@@ -1,0 +1,124 @@
+import type { Settings, Task, TaskStatus } from "../../shared/contracts";
+
+export interface TaskNotification {
+  title: string;
+  body: string;
+}
+export interface NotificationAdapter {
+  channel: "desktop" | "wecom" | "dingtalk";
+  enabled: (settings: Settings["notifications"]) => boolean;
+  send: (message: TaskNotification, task: Task) => void | Promise<void>;
+}
+export class NotificationProvider {
+  constructor(private adapters: NotificationAdapter[]) {}
+  async dispatch(
+    previous: TaskStatus | undefined,
+    task: Task,
+    settings: Settings,
+    focused: boolean,
+  ) {
+    const message = notificationForTransition(
+      previous,
+      task,
+      settings.language,
+    );
+    const enabled =
+      task.status === "ready"
+        ? settings.notifications.milestones.planReady
+        : ["waiting-test", "waiting-review"].includes(task.status)
+          ? settings.notifications.milestones.developmentComplete
+          : task.status === "review"
+            ? settings.notifications.milestones.acceptanceReady
+            : task.status === "failed"
+              ? settings.notifications.milestones.failed
+              : task.status === "accepted"
+                ? (settings.notifications.milestones.deliveryComplete ?? true)
+                : false;
+    if (!message || !settings.notifications.enabled || !enabled) return [];
+    return Promise.all(
+      this.adapters
+        .filter(
+          (adapter) =>
+            adapter.enabled(settings.notifications) &&
+            !(adapter.channel === "desktop" && focused),
+        )
+        .map(async (adapter) => {
+          try {
+            await adapter.send(message, task);
+            return { channel: adapter.channel, sent: true };
+          } catch {
+            return { channel: adapter.channel, sent: false };
+          }
+        }),
+    );
+  }
+}
+
+export function notificationForTransition(
+  previous: TaskStatus | undefined,
+  task: Task,
+  language: "zh-CN" | "en-US" = "zh-CN",
+): TaskNotification | undefined {
+  if (!previous || previous === task.status) return undefined;
+  if (task.status === "accepted" && task.delivery?.pushedAt)
+    return language === "en-US"
+      ? {
+          title: "Code pushed successfully",
+          body: `“${task.title}” has been accepted and pushed. This does not mean it has been merged or deployed.`,
+        }
+      : {
+          title: "代码已成功推送",
+          body: `“${task.title}”已验收并推送；不代表已经合并或上线。`,
+        };
+  if (task.status === "ready")
+    return language === "en-US"
+      ? {
+          title: "Development plan ready",
+          body: `“${task.title}” is waiting for plan and test-case approval.`,
+        }
+      : {
+          title: "开发计划已生成",
+          body: `“${task.title}”等待确认计划与测试用例。`,
+        };
+  if (task.status === "waiting-test")
+    return language === "en-US"
+      ? {
+          title: "Development complete",
+          body: `“${task.title}” is ready for automated testing.`,
+        }
+      : {
+          title: "开发完成",
+          body: `“${task.title}”已完成开发，等待启动自动化测试。`,
+        };
+  if (task.status === "waiting-review")
+    return language === "en-US"
+      ? {
+          title: "Development complete",
+          body: `“${task.title}” is ready for manual runtime review.`,
+        }
+      : {
+          title: "开发修复完成",
+          body: `“${task.title}”已完成开发，可启动项目或在现有环境中自行验证。`,
+        };
+  if (task.status === "review")
+    return language === "en-US"
+      ? {
+          title: "Required checks complete",
+          body: `“${task.title}” passed required checks and is ready for review.`,
+        }
+      : {
+          title: "必要检查完成",
+          body: `“${task.title}”已通过必要检查，等待人工验收。`,
+        };
+  if (task.status === "failed")
+    return language === "en-US"
+      ? {
+          title: "Task failed",
+          body: `“${task.title}” failed. Open TingYun Studio for details.`,
+        }
+      : {
+          title: "任务执行失败",
+          body: `“${task.title}”执行失败，请打开 TingYun Studio 查看原因。`,
+        };
+  return undefined;
+}

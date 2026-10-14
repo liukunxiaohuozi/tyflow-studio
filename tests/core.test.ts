@@ -38,15 +38,23 @@ describe("security and state invariants", () => {
       steps: ["change code"],
       risks: [],
       blockers: [],
-      testCases: [{ id: "CASE-1", title: "case", steps: ["run"], expected: "ok" }],
+      testCases: [
+        { id: "CASE-1", title: "case", steps: ["run"], expected: "ok" },
+      ],
     });
     expect(plan.traceabilityMode).toBe("legacy");
-    expect(validateTraceability(plan).some((check) => check.state !== "passed")).toBe(true);
+    expect(
+      validateTraceability(plan).some((check) => check.state !== "passed"),
+    ).toBe(true);
   });
 
   test("P0 evidence cannot pass with prose only", () => {
-    const checks = [{ name: "CASE-1", state: "passed" as const, detail: "looks good" }];
-    expect(validateEvidence(checks, process.cwd(), new Set(["CASE-1"]))[0].state).toBe("blocked");
+    const checks = [
+      { name: "CASE-1", state: "passed" as const, detail: "looks good" },
+    ];
+    expect(
+      validateEvidence(checks, process.cwd(), new Set(["CASE-1"]))[0].state,
+    ).toBe("blocked");
   });
   test("reuses formal tests only when source, plan, skill and evidence all match", () => {
     const execution = {
@@ -139,7 +147,7 @@ describe("security and state invariants", () => {
       ),
     ).not.toThrow();
   });
-  test("only an actively developing Bug can be paused for supplemental evidence", () => {
+  test("all active key phases can pause for context, but stopped tasks cannot pause twice", () => {
     const task: Task = {
       ...input,
       kind: "bug",
@@ -154,9 +162,16 @@ describe("security and state invariants", () => {
       assets: [],
     };
     expect(() => canAct(task, "pause")).not.toThrow();
-    expect(() => canAct({ ...task, kind: "text" }, "pause")).toThrow(
-      /仅适用于.*Bug/,
-    );
+    expect(() => canAct({ ...task, kind: "text" }, "pause")).not.toThrow();
+    for (const status of [
+      "queued",
+      "analyzing",
+      "testing",
+      "starting",
+    ] as const)
+      expect(() =>
+        canAct({ ...task, status, kind: "text" }, "pause"),
+      ).not.toThrow();
     expect(() => canAct({ ...task, status: "stopped" }, "pause")).toThrow();
   });
   test("notifies only when a task enters a human-attention milestone", () => {
@@ -188,7 +203,7 @@ describe("security and state invariants", () => {
     expect(
       notificationForTransition("testing", { ...task, status: "review" }),
     ).toEqual({
-      title: "开发与测试完成",
+      title: "必要检查完成",
       body: "“Requirement”已通过必要检查，等待人工验收。",
     });
   });
@@ -287,11 +302,22 @@ describe("durable task store", () => {
     const store = new Store(dir);
     const task = store.saveTask(input);
     task.status = "ready";
-    task.plan = { summary: "Evaluated source", steps: ["Implement"], risks: [], testCases: [{ id: "T1", title: "Behavior", steps: ["Verify"], expected: "Pass" }], blockers: [] };
+    task.plan = {
+      summary: "Evaluated source",
+      steps: ["Implement"],
+      risks: [],
+      testCases: [
+        { id: "T1", title: "Behavior", steps: ["Verify"], expected: "Pass" },
+      ],
+      blockers: [],
+    };
     task.baseCommit = "a".repeat(40);
     task.targetCommit = "b".repeat(40);
     store.putTask(task);
-    const renamed = store.saveTask({ ...input, branch: { ...input.branch, name: "feat/renamed" } }, task.id);
+    const renamed = store.saveTask(
+      { ...input, branch: { ...input.branch, name: "feat/renamed" } },
+      task.id,
+    );
     expect(renamed.status).toBe("ready");
     expect(renamed.plan).toEqual(task.plan);
     expect(renamed.baseCommit).toBe(task.baseCommit);
@@ -299,20 +325,40 @@ describe("durable task store", () => {
     expect(renamed.branch.name).toBe("feat/renamed");
     expect(new Store(dir).getTask(task.id).plan).toEqual(task.plan);
   });
-  test.each(["base", "version"] as const)("changing source branch %s invalidates the plan and both assessed commits", field => {
-    const store = new Store(dir);
-    const task = store.saveTask(input);
-    task.status = "ready";
-    task.plan = { summary: "Original source", steps: ["Implement"], risks: [], testCases: [{ id: "T1", title: "Behavior", steps: ["Verify"], expected: "Pass" }], blockers: [] };
-    task.baseCommit = "a".repeat(40);
-    task.targetCommit = "b".repeat(40);
-    store.putTask(task);
-    const changed = store.saveTask({ ...input, branch: { ...input.branch, [field]: field === "base" ? "release" : "v2.0" } }, task.id);
-    expect(changed.status).toBe("draft");
-    expect(changed.plan).toBeUndefined();
-    expect(changed.baseCommit).toBeUndefined();
-    expect(changed.targetCommit).toBeUndefined();
-  });
+  test.each(["base", "version"] as const)(
+    "changing source branch %s invalidates the plan and both assessed commits",
+    (field) => {
+      const store = new Store(dir);
+      const task = store.saveTask(input);
+      task.status = "ready";
+      task.plan = {
+        summary: "Original source",
+        steps: ["Implement"],
+        risks: [],
+        testCases: [
+          { id: "T1", title: "Behavior", steps: ["Verify"], expected: "Pass" },
+        ],
+        blockers: [],
+      };
+      task.baseCommit = "a".repeat(40);
+      task.targetCommit = "b".repeat(40);
+      store.putTask(task);
+      const changed = store.saveTask(
+        {
+          ...input,
+          branch: {
+            ...input.branch,
+            [field]: field === "base" ? "release" : "v2.0",
+          },
+        },
+        task.id,
+      );
+      expect(changed.status).toBe("draft");
+      expect(changed.plan).toBeUndefined();
+      expect(changed.baseCommit).toBeUndefined();
+      expect(changed.targetCommit).toBeUndefined();
+    },
+  );
   test("corrupt persisted JSON is reported rather than silently reset", () => {
     fs.writeFileSync(path.join(dir, "state.json"), "{broken");
     expect(() => new Store(dir)).toThrow();

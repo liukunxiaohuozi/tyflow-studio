@@ -56,6 +56,7 @@ process.stdin.on("end", () => {
     }),
   );
   setTimeout(() => {
+    if (config.eventError) console.log(JSON.stringify({ type: "turn.failed", error: { message: config.eventError } }));
     if (config.fail === stage) {
       console.error("fixture deliberate failure");
       process.exitCode = 7;

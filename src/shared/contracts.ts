@@ -27,7 +27,12 @@ export interface Project {
   defaultBranchMode: "new" | "existing";
 }
 export interface Settings {
-  execution?: { concurrency: number; previewMode: "single" | "multiple" };
+  execution?: {
+    concurrency: number;
+    previewMode: "single" | "multiple";
+    agentIdleTimeoutMs?: number;
+    agentTimeoutMs?: number;
+  };
   updates?: {
     manifestUrl: string;
     githubRepository: string;
@@ -47,11 +52,13 @@ export interface Settings {
   notifications: {
     enabled: boolean;
     desktop: boolean;
+    wecom?: { enabled: boolean; hasSecret?: boolean };
     milestones: {
       planReady: boolean;
       developmentComplete: boolean;
       acceptanceReady: boolean;
       failed: boolean;
+      deliveryComplete?: boolean;
     };
   };
   theme: string;
@@ -180,6 +187,7 @@ export interface TestExecution {
   sourceSnapshot: string;
   planHash: string;
   skillHash?: string;
+  contextHash?: string;
   completedAt: string;
   reused: boolean;
   checks: CheckResult[];
@@ -214,6 +222,13 @@ export interface AssetDiff {
   unchanged: number;
 }
 export interface Task extends TaskInput {
+  checkpoints?: WorkflowCheckpoint[];
+  failure?: TaskFailure;
+  activity?: {
+    checkpointId?: string;
+    lastOutputAt: string;
+    idleTimeoutMs?: number;
+  };
   executionIntent?: { directFix: boolean; forceTests: boolean };
   workspace?: {
     directory: string;
@@ -269,6 +284,38 @@ export interface Task extends TaskInput {
     remote: string;
     pushedAt?: string;
   };
+}
+
+export type FailureCategory =
+  "environment" | "agent" | "code" | "test" | "git" | "policy" | "interrupted";
+export interface TaskFailure {
+  category: FailureCategory;
+  code: string;
+  stage: Stage;
+  checkpointId: string;
+  message: string;
+  impact: string[];
+  recommendedActions: string[];
+  retryable: boolean;
+  at: string;
+}
+export interface ResultReference {
+  path: string;
+  sha256: string;
+}
+export interface WorkflowCheckpoint {
+  id: string;
+  label: string;
+  stage: Stage;
+  category: FailureCategory;
+  status: "running" | "passed" | "failed" | "interrupted" | "invalidated";
+  fingerprint: string;
+  attempts: number;
+  reused: number;
+  startedAt: string;
+  finishedAt?: string;
+  result?: ResultReference;
+  failure?: TaskFailure;
 }
 export interface RepositoryInfo {
   remoteBranches?: {
@@ -344,6 +391,7 @@ export type TaskAction =
   | "test"
   | "start"
   | "pause"
+  | "supplement"
   | "stop"
   | "terminate"
   | "accept"
@@ -369,7 +417,7 @@ export interface StudioAPI {
   previewAsset(id: string, page?: string): Promise<void>;
   repository(projectId: string, sync?: boolean): Promise<RepositoryInfo>;
   testConnection(
-    target: "git" | "zentao" | "agent",
+    target: "git" | "zentao" | "agent" | "wecom",
     projectId?: string,
   ): Promise<{ ok: boolean; message: string }>;
   openZentao(type: "story" | "task" | "bug", id: string): Promise<void>;
@@ -387,6 +435,7 @@ export interface StudioAPI {
   openTarget(id: string, external?: boolean): Promise<void>;
   exportTask(id: string): Promise<string | null>;
   onTask(callback: (task: Task) => void): () => void;
+  onNotification?(callback: (message: string) => void): () => void;
 }
 declare global {
   interface Window {

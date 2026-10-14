@@ -6,6 +6,8 @@ import net from "node:net";
 import http from "node:http";
 import { StudioService } from "../src/main/service";
 import { Store } from "../src/main/store";
+import { GitSCMProvider } from "../src/main/providers/scm";
+import { PolicyEngine } from "../src/main/policy";
 import type { Task, TaskInput } from "../src/shared/contracts";
 
 jest.setTimeout(30000);
@@ -1192,4 +1194,233 @@ test("startup retry adopts corrected runtime settings while preserving the froze
   expect(new Store(store.directory).getTask(task.id).runtime).toEqual(
     reviewed.runtime,
   );
+});
+
+test("non-Bug assessment supports pause and supplementation without re-entering requirement input", async () => {
+  configure({ delay: 10000 });
+  const t = create();
+  await service.action(t.id, "analyze");
+  await until(() => calls().length === 1);
+  const paused = await service.action(t.id, "pause");
+  expect(paused.status).toBe("stopped");
+  expect(paused.error).toBeUndefined();
+  configure({});
+  await service.action(t.id, "retry", {
+    supplement: { text: "原需求范围不变，新增环境证据。" },
+  });
+  const resumed = await status(t.id, "ready");
+  expect(resumed.supplements?.[0].stage).toBe("analysis");
+  expect(calls().at(-1)?.prompt).toContain("新增环境证据");
+  expect(
+    resumed.checkpoints?.find((c) => c.id === "analysis:agent")?.attempts,
+  ).toBe(2);
+});
+
+test("one failed case retries only that case and reuses passed engineering commands and cases", async () => {
+  const planned = await ready();
+  const caseOne = planned.plan!.testCases[0];
+  planned.plan!.testCases.push({
+    ...caseOne,
+    id: "CASE-2",
+    title: "Second case",
+  });
+  store.putTask(planned);
+  await service.action(planned.id, "develop");
+  await status(planned.id, "waiting-test");
+  const passed = {
+    name: "CASE-1",
+    state: "passed",
+    detail: "independent fixture observation",
+    evidence: [
+      {
+        kind: "command",
+        command: "fixture-check",
+        exitCode: 0,
+        summary: "controlled success",
+      },
+    ],
+  };
+  configure({
+    result: {
+      summary: "one failure",
+      checks: [
+        passed,
+        {
+          name: "CASE-2",
+          state: "failed",
+          detail: "controlled assertion mismatch",
+        },
+      ],
+    },
+  });
+  await service.action(planned.id, "test");
+  const failed = await status(planned.id, "failed");
+  expect(failed.failure?.category).toBe("test");
+  configure({
+    result: {
+      summary: "second case recovered",
+      checks: [{ ...passed, name: "CASE-2" }],
+    },
+  });
+  await service.action(planned.id, "retry");
+  const recovered = await status(planned.id, "waiting-review");
+  expect(calls().map((c) => c.stage)).toEqual([
+    "analysis",
+    "development",
+    "test",
+    "test",
+  ]);
+  const lastPrompt = calls().at(-1)!.prompt;
+  expect(lastPrompt).toContain('"id":"CASE-2"');
+  expect(lastPrompt).not.toContain('"id":"CASE-1"');
+  expect(
+    recovered.checkpoints?.find((c) => c.id === "test:command:test"),
+  ).toMatchObject({ attempts: 1, reused: 1 });
+  expect(
+    recovered.checkpoints?.find((c) => c.id === "test:case:CASE-1"),
+  ).toMatchObject({ attempts: 1, reused: 1 });
+  expect(recovered.runs?.filter((r) => r.stage === "test")).toHaveLength(2);
+});
+
+test("Git push failure retries delivery only and never creates another commit", async () => {
+  const t = await developed();
+  await service.action(t.id, "test");
+  await status(t.id, "waiting-review");
+  const remote = path.join(root, "recovery-remote.git");
+  execFileSync("git", ["init", "--bare", remote], { windowsHide: true });
+  git("remote", "add", "origin", remote);
+  fs.writeFileSync(
+    path.join(repository, "delivery.txt"),
+    "authorized delivery",
+  );
+  const commitAndPush = jest.fn(GitSCMProvider.commitAndPush);
+  commitAndPush.mockImplementationOnce(async (...args) => {
+    const [project, , branch, title, , , onCommitted] = args;
+    git("add", "--all");
+    git("commit", "-m", title);
+    onCommitted?.({
+      commit: git("rev-parse", "HEAD"),
+      branch,
+      remote: "origin",
+    });
+    expect(project.directory).toBe(repository);
+    throw new Error("fixture push disconnected");
+  });
+  service = new StudioService(
+    store,
+    credentials,
+    (changed) => observed.push(changed),
+    async () => {},
+    { scm: { ...GitSCMProvider, commitAndPush } },
+  );
+  await expect(service.action(t.id, "accept")).rejects.toThrow("disconnected");
+  const failed = store.getTask(t.id),
+    commit = git("rev-parse", "HEAD"),
+    count = calls().length;
+  expect(failed.failure?.category).toBe("git");
+  const recovered = await service.action(t.id, "retry");
+  expect(recovered.status).toBe("accepted");
+  expect(git("rev-parse", "HEAD")).toBe(commit);
+  expect(calls().length).toBe(count);
+  expect(
+    recovered.checkpoints?.find((c) => c.id === "delivery:push")?.attempts,
+  ).toBe(2);
+});
+
+test("supplementing an approved but unexecuted plan requires fresh assessment", async () => {
+  const t = await ready();
+  const updated = await service.action(t.id, "supplement", {
+    supplement: { text: "补充验收上下文" },
+  });
+  expect(updated.status).toBe("draft");
+  expect(updated.plan).toBeUndefined();
+  await expect(service.action(t.id, "develop")).rejects.toThrow();
+});
+
+test("silent Codex timeout is an Agent failure and resumes the same frozen workspace", async () => {
+  const settings = store.settings();
+  settings.execution = {
+    concurrency: 2,
+    previewMode: "single",
+    agentIdleTimeoutMs: 1000,
+  };
+  store.saveSettings(settings);
+  configure({ delay: 10000 });
+  const t = create({ kind: "bug" });
+  await service.action(t.id, "fix");
+  const failed = await status(t.id, "failed");
+  expect(failed.failure).toMatchObject({
+    category: "agent",
+    code: "IDLE_TIMEOUT",
+    checkpointId: "development:agent",
+  });
+  expect(failed.snapshot).toBeDefined();
+  configure({});
+  await service.action(t.id, "retry");
+  const recovered = await status(t.id, "waiting-review");
+  expect(recovered.snapshot).toEqual(failed.snapshot);
+  expect(calls().map((c) => c.stage)).toEqual(["development", "development"]);
+});
+
+test("a network turn failure cannot become a pass even when Codex exits zero with valid JSON", async () => {
+  configure({ eventError: "ECONNRESET connection reset by peer" });
+  const t = create();
+  await service.action(t.id, "analyze");
+  const failed = await status(t.id, "failed");
+  expect(failed.failure).toMatchObject({
+    category: "agent",
+    code: "NETWORK_LOST",
+  });
+  expect(failed.plan).toBeUndefined();
+  expect(
+    failed.checkpoints?.find((c) => c.id === "analysis:agent")?.status,
+  ).toBe("failed");
+});
+
+test("reported implementation failures are code failures, not Agent transport failures", async () => {
+  const t = await ready();
+  configure({
+    result: {
+      summary: "controlled code failure",
+      checks: [
+        {
+          name: "compile",
+          state: "failed",
+          detail: "independent compiler failure",
+        },
+      ],
+    },
+  });
+  await service.action(t.id, "develop");
+  const failed = await status(t.id, "failed");
+  expect(failed.failure).toMatchObject({
+    category: "code",
+    code: "DEVELOPMENT_CHECK_FAILED",
+  });
+});
+
+test("a policy-only failure revalidates the gate without repeating the completed development Agent", async () => {
+  const t = await ready(),
+    policy = new PolicyEngine();
+  jest
+    .spyOn(policy, "changes")
+    .mockReturnValueOnce([
+      { name: "scope", state: "blocked", detail: "controlled gate failure" },
+    ]);
+  service = new StudioService(
+    store,
+    credentials,
+    (changed) => observed.push(changed),
+    async () => {},
+    { policy },
+  );
+  await service.action(t.id, "develop");
+  const failed = await status(t.id, "failed");
+  expect(failed.failure?.category).toBe("policy");
+  await service.action(t.id, "retry");
+  const recovered = await status(t.id, "waiting-test");
+  expect(calls().map((c) => c.stage)).toEqual(["analysis", "development"]);
+  expect(
+    recovered.checkpoints?.find((c) => c.id === "development:agent"),
+  ).toMatchObject({ attempts: 1, reused: 1 });
 });

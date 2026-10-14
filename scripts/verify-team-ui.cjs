@@ -2,6 +2,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const net = require("node:net");
 const { execFileSync } = require("node:child_process");
 const { _electron, expect } = require("playwright/test");
 
@@ -18,6 +19,12 @@ async function main() {
   fs.mkdirSync(repository);
   fs.mkdirSync(data);
   fs.mkdirSync(evidence, { recursive: true });
+  const reservation = net.createServer();
+  await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = reservation.address().port;
+  await new Promise((resolve, reject) =>
+    reservation.close((error) => (error ? reject(error) : resolve())),
+  );
   const git = (...args) =>
     execFileSync("git", args, { cwd: repository, stdio: "pipe" });
   git("init", "--initial-branch=main");
@@ -65,7 +72,7 @@ async function main() {
         auth: "system",
         username: "",
         startScript: "start:dev",
-        targetUrl: "http://127.0.0.1:49873",
+        targetUrl: `http://127.0.0.1:${port}`,
         defaultBranchMode: "existing",
       },
     ],
@@ -125,10 +132,48 @@ async function main() {
     env,
     timeout: 45000,
   });
+  const electronProcess = app.process();
   try {
     const page = await app.firstWindow();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    await app.evaluate(() => {
+      globalThis.teamWecomMessages = [];
+      const original = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        if (String(url).startsWith("https://qyapi.weixin.qq.com/")) {
+          globalThis.teamWecomMessages.push(JSON.parse(init.body));
+          return new Response(JSON.stringify({ errcode: 0 }));
+        }
+        return original(url, init);
+      };
+    });
+    await expect
+      .poll(
+        () =>
+          page.evaluate(async () => {
+            const settings = (await window.studio.bootstrap()).settings;
+            settings.notifications.enabled = true;
+            settings.notifications.wecom = { enabled: true };
+            for (const key of Object.keys(settings.notifications.milestones))
+              settings.notifications.milestones[key] = true;
+            try {
+              await window.studio.saveSettings({
+                ...settings,
+                secrets: {
+                  wecom:
+                    "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=team-fixture-not-real",
+                },
+              });
+              return "saved";
+            } catch (error) {
+              if (String(error).includes("远程同步中")) return "initial-sync";
+              throw error;
+            }
+          }),
+        { timeout: 15000 },
+      )
+      .toBe("saved");
     await page.evaluate(async () => {
       for (const projectId of ["fixture", "other"]) {
         await window.studio.saveTask({
@@ -256,6 +301,33 @@ async function main() {
         { timeout: 30000 },
       )
       .toBe(2);
+    await expect
+      .poll(
+        () =>
+          app.evaluate(
+            () =>
+              globalThis.teamWecomMessages.filter((message) =>
+                message.text.content.startsWith(
+                  "TingYun Studio · 开发修复完成",
+                ),
+              ).length,
+          ),
+        { timeout: 10000 },
+      )
+      .toBe(2);
+    const developmentMessages = await app.evaluate(
+      () => globalThis.teamWecomMessages,
+    );
+    expect(
+      developmentMessages.some((message) =>
+        message.text.content.includes("并行任务 A"),
+      ),
+    ).toBe(true);
+    expect(
+      developmentMessages.some((message) =>
+        message.text.content.includes("并行任务 B"),
+      ),
+    ).toBe(true);
     const result = await page.evaluate(
       async () => (await window.studio.bootstrap()).tasks,
     );
@@ -301,6 +373,14 @@ async function main() {
         { timeout: 30000 },
       )
       .toBe("review");
+    expect(
+      await app.evaluate(
+        () =>
+          globalThis.teamWecomMessages.filter((message) =>
+            message.text.content.startsWith("TingYun Studio · 开发修复完成"),
+          ).length,
+      ),
+    ).toBe(2);
     const windows = await app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().map((win) => ({
         title: win.getTitle(),
@@ -317,11 +397,184 @@ async function main() {
       "keep source work"
     )
       throw new Error("Original source changed");
+    fs.writeFileSync(path.join(fixtureRoot, "control.json"), '{"delay":10000}');
+    const recoveryId = await page.evaluate(async () => {
+      const task = await window.studio.saveTask({
+        title: "需求评估暂停恢复",
+        kind: "text",
+        size: "small",
+        description:
+          "Verify assessment recovery without replacing the requirement",
+        projectId: "fixture",
+        assetIds: [],
+        workspaceMode: "isolated",
+        autoTest: false,
+        branch: { mode: "existing", base: "main", name: "main", version: "" },
+      });
+      await window.studio.taskAction(task.id, "analyze");
+      return task.id;
+    });
+    await expect
+      .poll(
+        () => {
+          const file = path.join(fixtureRoot, "calls.jsonl");
+          return (
+            fs.existsSync(file) &&
+            fs.readFileSync(file, "utf8").includes('"stage":"analysis"')
+          );
+        },
+        { timeout: 20000 },
+      )
+      .toBe(true);
+    await page.getByRole("button", { name: "需求记录", exact: false }).click();
+    await page
+      .locator("main table")
+      .getByRole("button", { name: "需求评估暂停恢复", exact: true })
+      .click();
+    await page.getByRole("button", { name: "暂停并补充", exact: true }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "取消", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          async (id) =>
+            (await window.studio.bootstrap()).tasks.find((t) => t.id === id)
+              ?.status,
+          recoveryId,
+        ),
+      )
+      .toBe("stopped");
+    await expect(page.getByText("独立检查点", { exact: false })).toBeVisible();
+    await page.screenshot({
+      path: path.join(evidence, "assessment-paused.png"),
+      fullPage: false,
+      animations: "disabled",
+    });
+    fs.writeFileSync(path.join(fixtureRoot, "control.json"), "{}");
+    await page
+      .getByRole("button", { name: "补充信息后重试", exact: true })
+      .click();
+    await page
+      .getByRole("dialog")
+      .getByLabel("补充说明", { exact: true })
+      .fill("补充受控测试证据，需求范围不变。");
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "保存补充并继续当前阶段", exact: true })
+      .click();
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            async (id) =>
+              (await window.studio.bootstrap()).tasks.find((t) => t.id === id)
+                ?.status,
+            recoveryId,
+          ),
+        { timeout: 30000 },
+      )
+      .toBe("ready");
+    const recovered = await page.evaluate(
+      async (id) =>
+        (await window.studio.bootstrap()).tasks.find((t) => t.id === id),
+      recoveryId,
+    );
+    expect(recovered.supplements[0].stage).toBe("analysis");
+    expect(
+      recovered.runs
+        .filter((run) => run.stage === "analysis")
+        .map((run) => run.status),
+    ).toEqual(["stopped", "passed"]);
+    await expect(
+      page.getByRole("button", { name: "追加信息并重新评估", exact: true }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: path.join(evidence, "assessment-resumed.png"),
+      fullPage: false,
+      animations: "disabled",
+    });
+    fs.writeFileSync(
+      path.join(fixtureRoot, "control.json"),
+      '{"fail":"analysis"}',
+    );
+    const failureId = await page.evaluate(async () => {
+      const task = await window.studio.saveTask({
+        title: "Agent 失败恢复展示",
+        kind: "text",
+        size: "small",
+        description: "Controlled Agent failure",
+        projectId: "fixture",
+        assetIds: [],
+        workspaceMode: "isolated",
+        autoTest: false,
+        branch: { mode: "existing", base: "main", name: "main", version: "" },
+      });
+      await window.studio.taskAction(task.id, "analyze");
+      return task.id;
+    });
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            async (id) =>
+              (await window.studio.bootstrap()).tasks.find((t) => t.id === id)
+                ?.status,
+            failureId,
+          ),
+        { timeout: 30000 },
+      )
+      .toBe("failed");
+    await page.getByRole("button", { name: "需求记录", exact: false }).click();
+    await page
+      .locator("main table")
+      .getByRole("button", { name: "Agent 失败恢复展示", exact: true })
+      .click();
+    await expect(
+      page.getByText("Agent 失败 · ABNORMAL_EXIT", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("推荐操作", { exact: false })).toBeVisible();
+    await page.screenshot({
+      path: path.join(evidence, "failure-recovery.png"),
+      fullPage: false,
+      animations: "disabled",
+    });
     expect(errors).toEqual([]);
+    const wecomMessages = await app.evaluate(
+      () => globalThis.teamWecomMessages,
+    );
     if (process.platform === "win32") {
-      const child = app.process();
+      const child = electronProcess;
       await page.close();
       await expect.poll(() => child.exitCode, { timeout: 15000 }).toBe(0);
+      const previewPort = Number(
+        new URL(
+          windows.find((win) => win.url.startsWith("http://127.0.0.1:")).url,
+        ).port,
+      );
+      await expect
+        .poll(
+          () =>
+            new Promise((resolve) => {
+              const socket = net.connect(previewPort, "127.0.0.1");
+              socket.once("connect", () => {
+                socket.destroy();
+                resolve(true);
+              });
+              socket.once("error", () => {
+                socket.destroy();
+                resolve(false);
+              });
+              socket.setTimeout(1000, () => {
+                socket.destroy();
+                resolve(false);
+              });
+            }),
+          { timeout: 5000 },
+        )
+        .toBe(false);
     }
     fs.writeFileSync(
       path.join(evidence, "result.json"),
@@ -330,6 +583,18 @@ async function main() {
           passed: true,
           windows,
           errors,
+          wecom: {
+            transport: "isolated sink; no live group writes",
+            messages: wecomMessages,
+          },
+          recovery: {
+            id: recoveryId,
+            checkpoints: recovered.checkpoints,
+            runs: recovered.runs.map((r) => ({
+              stage: r.stage,
+              status: r.status,
+            })),
+          },
           tasks: result.map((task) => ({
             title: task.title,
             status: task.status,
@@ -342,7 +607,9 @@ async function main() {
     );
     console.log(`Real Electron/IPC UI checks passed. Evidence: ${evidence}`);
   } finally {
-    await app.close().catch(() => {});
+    // Windows close smoke has already awaited the OS process exit. Do not send
+    // a second protocol close to an exited Electron process.
+    if (electronProcess.exitCode === null) await app.close().catch(() => {});
     await fs.promises.rm(fixtureRoot, {
       recursive: true,
       force: true,
@@ -351,7 +618,9 @@ async function main() {
     });
   }
 }
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

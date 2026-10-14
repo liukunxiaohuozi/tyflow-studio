@@ -10,7 +10,6 @@ import {
   GitBranch,
   Loader2,
   MessageSquarePlus,
-  Paperclip,
   Play,
   RotateCcw,
   Square,
@@ -30,6 +29,8 @@ import {
 } from "./components";
 import { I18nT } from "./i18n";
 import AttachmentImages from "./AttachmentImages";
+import RecoveryPanel from "./RecoveryPanel";
+import SupplementDialog from "./SupplementDialog";
 
 function toneOf(status: Task["status"]) {
   if (status === "accepted") return "success";
@@ -104,12 +105,7 @@ export default function RunView({
   const [follow, setFollow] = useState(true);
   const [busy, setBusy] = useState(false);
   const [supplementOpen, setSupplementOpen] = useState(false);
-  const [supplementOrigin, setSupplementOrigin] = useState<"paused" | "failed">(
-    "failed",
-  );
   const [startConfirmOpen, setStartConfirmOpen] = useState(false);
-  const [supplementText, setSupplementText] = useState("");
-  const [supplementAssets, setSupplementAssets] = useState<Task["assets"]>([]);
   const logRef = useRef<HTMLDivElement>(null);
   const running = activeStatuses.includes(task.status);
   const tone = toneOf(task.status);
@@ -138,63 +134,12 @@ export default function RunView({
     setStartConfirmOpen(false);
     await action("start");
   }
-  async function addSupplementFiles() {
-    if (!api) return;
-    setBusy(true);
-    try {
-      const incoming = await api.importFiles("attachment");
-      setSupplementAssets((previous) => {
-        const merged = [...previous];
-        for (const asset of incoming)
-          if (!merged.some((item) => item.id === asset.id)) merged.push(asset);
-        return merged;
-      });
-    } catch (error) {
-      report((error as Error).message, true);
-    } finally {
-      setBusy(false);
-    }
-  }
   async function pauseAndSupplement() {
     if (!api) return;
     setBusy(true);
     try {
-      const updated = await api.taskAction(task.id, "pause");
-      onTask(updated);
-      setSupplementOrigin("paused");
-      setSupplementText("");
-      setSupplementAssets([]);
+      onTask(await api.taskAction(task.id, "pause"));
       setSupplementOpen(true);
-    } catch (error) {
-      report((error as Error).message, true);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function retryWithSupplement() {
-    if (!api) return;
-    if (!supplementText.trim() && !supplementAssets.length) {
-      report(
-        I18nT(
-          "请填写补充信息或添加截图、日志等附件。",
-          "Add supplemental details or attach screenshots or logs.",
-        ),
-        true,
-      );
-      return;
-    }
-    setBusy(true);
-    try {
-      const updated = await api.taskAction(task.id, "retry", {
-        supplement: {
-          text: supplementText.trim() || undefined,
-          assetIds: supplementAssets.map((asset) => asset.id),
-        },
-      });
-      setSupplementOpen(false);
-      setSupplementText("");
-      setSupplementAssets([]);
-      onTask(updated);
     } catch (error) {
       report((error as Error).message, true);
     } finally {
@@ -225,6 +170,7 @@ export default function RunView({
   const complete = task.status === "accepted";
   const good = task.checks.filter((x) => x.state === "passed").length;
   const gates = gateChecks(task);
+  const workflowStep = task.snapshot ? 2 : task.stage === "analysis" ? 0 : 1;
   return (
     <div className={`run-page tone-${tone}`}>
       <header className="run-hero">
@@ -257,15 +203,21 @@ export default function RunView({
           I18nT("确认执行", "Confirm execution"),
           I18nT("运行与验收", "Run and accept"),
         ].map((label, i) => (
-          <div key={label} className={`step ${i === 2 ? "current" : "done"}`}>
-            <span>{i < 2 ? <Check size={14} /> : 3}</span>
+          <div
+            key={label}
+            className={`step ${i === workflowStep ? "current" : i < workflowStep ? "done" : ""}`}
+          >
+            <span>{i < workflowStep ? <Check size={14} /> : i + 1}</span>
             {label}
             {i < 2 && <ChevronRight size={15} className="step-separator" />}
           </div>
         ))}
       </nav>
 
-      {task.error && <Notice tone="error">{task.error}</Notice>}
+      <RecoveryPanel task={task} />
+      {task.error && !task.failure && (
+        <Notice tone="error">{task.error}</Notice>
+      )}
       {task.status === "waiting-review" && (
         <Notice>
           {I18nT(
@@ -755,7 +707,7 @@ export default function RunView({
         <div className="actions">
           {running ? (
             <>
-              {task.kind === "bug" && task.status === "developing" && (
+              {running && (
                 <button
                   className="primary"
                   disabled={busy}
@@ -781,15 +733,18 @@ export default function RunView({
                     <RotateCcw size={15} />
                     {I18nT("直接重试", "Retry now")}
                   </button>
+                  {!task.snapshot && task.stage !== "analysis" && (
+                    <button
+                      disabled={busy}
+                      onClick={() => void action("analyze")}
+                    >
+                      {I18nT("重新评估需求", "Reassess requirement")}
+                    </button>
+                  )}
                   <button
                     className="primary"
                     disabled={busy}
                     onClick={() => {
-                      setSupplementOrigin(
-                        task.status === "stopped" && !task.error
-                          ? "paused"
-                          : "failed",
-                      );
                       setSupplementOpen(true);
                     }}
                   >
@@ -810,6 +765,20 @@ export default function RunView({
                     {I18nT("修复并重测", "Repair and retest")}
                   </button>
                 )}
+              {["waiting-test", "waiting-review", "review"].includes(
+                task.status,
+              ) && (
+                <button disabled={busy} onClick={() => setSupplementOpen(true)}>
+                  <MessageSquarePlus size={15} />
+                  {I18nT("追加信息", "Add context")}
+                </button>
+              )}
+              {task.failure?.checkpointId === "delivery:push" && (
+                <button disabled={busy} onClick={() => void action("retry")}>
+                  <RotateCcw size={15} />
+                  {I18nT("只重试 Git 推送", "Retry Git delivery only")}
+                </button>
+              )}
               {task.status === "waiting-test" && task.kind !== "bug" && (
                 <button
                   className="primary"
@@ -943,88 +912,14 @@ export default function RunView({
             </div>
           </Modal>
         )}
-        {supplementOpen && (
-          <Modal
-            title={I18nT("补充信息并继续修复", "Add details and continue")}
-            close={() => !busy && setSupplementOpen(false)}
-          >
-            <div className="supplement-modal">
-              <Notice>
-                {supplementOrigin === "paused"
-                  ? I18nT(
-                      "修复已暂停，原需求、已有代码、执行快照和日志都会保留。补充复现条件、期望结果或新证据后，将从当前修复阶段自动继续。",
-                      "The fix is paused. The request, code, snapshot, and logs are preserved. Add evidence and the current repair stage will continue automatically.",
-                    )
-                  : I18nT(
-                      "原需求、失败日志和已有代码都会保留。这里补充复现条件、账号权限、期望结果、控制台信息或新证据，然后从当前失败阶段继续。",
-                      "The original request, failure logs, and code are preserved. Add reproduction conditions, permissions, expected behavior, console output, or new evidence, then continue from the failed stage.",
-                    )}
-              </Notice>
-              <label className="field">
-                <span>{I18nT("补充说明", "Additional details")}</span>
-                <textarea
-                  autoFocus
-                  rows={7}
-                  maxLength={8000}
-                  value={supplementText}
-                  onChange={(event) => setSupplementText(event.target.value)}
-                  placeholder={I18nT(
-                    "例如：仅管理员账号复现；时间范围选择最近 30 分钟；控制台报错如下……",
-                    "For example: only admin accounts reproduce it; select the last 30 minutes; console error follows…",
-                  )}
-                />
-              </label>
-              <button disabled={busy} onClick={() => void addSupplementFiles()}>
-                <Paperclip size={15} />
-                {I18nT(
-                  "添加截图、日志或文本",
-                  "Attach screenshots, logs, or text",
-                )}
-              </button>
-              {supplementAssets.length > 0 && (
-                <ul className="supplement-assets">
-                  {supplementAssets.map((asset) => (
-                    <li key={asset.id}>
-                      <span>{asset.name}</span>
-                      <button
-                        className="link-button"
-                        disabled={busy}
-                        onClick={() =>
-                          setSupplementAssets((items) =>
-                            items.filter((item) => item.id !== asset.id),
-                          )
-                        }
-                      >
-                        {I18nT("移除", "Remove")}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <div className="modal-actions">
-                <button
-                  disabled={busy}
-                  onClick={() => setSupplementOpen(false)}
-                >
-                  {I18nT("取消", "Cancel")}
-                </button>
-                <button
-                  className="primary"
-                  disabled={busy}
-                  onClick={() => void retryWithSupplement()}
-                >
-                  {busy ? (
-                    <Loader2 className="spin" size={15} />
-                  ) : (
-                    <RotateCcw size={15} />
-                  )}
-                  {supplementOrigin === "paused"
-                    ? I18nT("确定并继续修复", "Continue fixing")
-                    : I18nT("保存补充并重试", "Save details and retry")}
-                </button>
-              </div>
-            </div>
-          </Modal>
+        {supplementOpen && api && (
+          <SupplementDialog
+            api={api}
+            task={task}
+            onTask={onTask}
+            report={report}
+            close={() => setSupplementOpen(false)}
+          />
         )}
       </div>
       {dialog && (

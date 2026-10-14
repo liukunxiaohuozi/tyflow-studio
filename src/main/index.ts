@@ -19,12 +19,45 @@ import { Vault } from "./vault";
 import { StudioService } from "./service";
 import { redact, validateTaskInput } from "./validation";
 import { normalizeScreenshot, screenshotThumbnail } from "./images";
-import { notificationForTransition } from "./notifications";
+import { NotificationProvider } from "./providers/notification";
 import { setupChecks } from "./setup";
 import { UpdateManager } from "./updates";
 import packageInfo from "../../package.json";
 
 let main: BrowserWindow | undefined;
+const notificationProvider = new NotificationProvider([
+  {
+    channel: "wecom",
+    enabled: (settings) => settings.wecom?.enabled ?? false,
+    send: async (message, task) => {
+      try {
+        if (!service) throw new Error("通知服务尚未初始化");
+        await service.sendWeCom(message, task);
+      } catch {
+        if (main && !main.isDestroyed())
+          main.webContents.send(
+            "studio:notification",
+            "企业微信通知未确认送达，请检查完成通知配置及测试群；开发任务不受影响，不会自动重发。",
+          );
+        throw new Error("企业微信通知未确认送达");
+      }
+    },
+  },
+  {
+    channel: "desktop",
+    enabled: (settings) => settings.desktop && Notification.isSupported(),
+    send: (message) => {
+      const notification = new Notification(message);
+      notification.on("click", () => {
+        if (!main || main.isDestroyed()) return;
+        if (main.isMinimized()) main.restore();
+        main.show();
+        main.focus();
+      });
+      notification.show();
+    },
+  },
+]);
 let verificationWindow: BrowserWindow | undefined;
 let service: StudioService | undefined;
 let updater: UpdateManager | undefined;
@@ -297,7 +330,7 @@ function bind() {
   );
   handle("connection", (target, id) =>
     service!.testConnection(
-      z.enum(["git", "agent", "zentao"]).parse(target),
+      z.enum(["git", "agent", "zentao", "wecom"]).parse(target),
       id === undefined ? undefined : z.string().max(60).parse(id),
     ),
   );
@@ -331,6 +364,7 @@ function bind() {
               "test",
               "start",
               "pause",
+              "supplement",
               "stop",
               "terminate",
               "accept",
@@ -510,39 +544,12 @@ else {
           taskStatuses.set(task.id, task.status);
           if (main && !main.isDestroyed()) {
             main.webContents.send("studio:task", task);
-            const message = notificationForTransition(
+            void notificationProvider.dispatch(
               previous,
               task,
-              store.settings().language,
+              store.settings(),
+              main.isFocused(),
             );
-            const notificationSettings = store.settings().notifications;
-            const milestoneEnabled =
-              task.status === "ready"
-                ? notificationSettings.milestones.planReady
-                : task.status === "waiting-test"
-                  ? notificationSettings.milestones.developmentComplete
-                  : task.status === "review"
-                    ? notificationSettings.milestones.acceptanceReady
-                    : task.status === "failed"
-                      ? notificationSettings.milestones.failed
-                      : false;
-            if (
-              message &&
-              notificationSettings.enabled &&
-              notificationSettings.desktop &&
-              milestoneEnabled &&
-              !main.isFocused() &&
-              Notification.isSupported()
-            ) {
-              const notification = new Notification(message);
-              notification.on("click", () => {
-                if (!main || main.isDestroyed()) return;
-                if (main.isMinimized()) main.restore();
-                main.show();
-                main.focus();
-              });
-              notification.show();
-            }
           }
         },
         async (url, context) => {

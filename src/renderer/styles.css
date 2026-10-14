@@ -2748,3 +2748,28 @@ main.task-intake {
 .setup-check.warning {
   border-left-color: #f59e0b;
 }
+.recovery-panel {
+  margin: 12px 0;
+}
+.recovery-panel details {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.recovery-panel ul {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  max-height: 260px;
+  overflow: auto;
+}
+.recovery-panel li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+}
+.recovery-panel .notice {
+  overflow-wrap: anywhere;
+}

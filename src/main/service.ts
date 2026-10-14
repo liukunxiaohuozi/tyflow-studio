@@ -1,9 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, ChildProcess } from "node:child_process";
-import { z } from "zod";
 import packageInfo from "../../package.json";
 import type {
   Bootstrap,
@@ -17,37 +15,32 @@ import type {
   RepositoryInfo,
   ChangeReview,
   FileAsset,
+  FailureCategory,
 } from "../shared/contracts";
 import { Store, atomicJson } from "./store";
 import { AssetManager } from "./imports";
-import {
-  commitAndPush,
-  changedFilesSince,
-  gitConnection,
-  inspectRepository,
-  prepareBranch,
-  resolveTargetCommit,
-  syncRepository,
-} from "./git";
+import { GitSCMProvider, type SCMProvider } from "./providers/scm";
 import { executablePath } from "./process";
-import { TaskQueue } from "./task-queue";
+import { WorkflowEngine, fingerprint } from "./workflow/engine";
+import { ProviderFailure, failureDetail } from "./workflow/failures";
+import { EvidenceStore } from "./evidence";
+import { CodexAgentProvider, type AgentProvider } from "./providers/agent";
+import { SkillTestProvider } from "./providers/test";
 import { prepareWorkspace, installWorkspaceDependencies } from "./workspaces";
 import { availablePort } from "./preview";
 import {
-  canAct,
-  canReuseTestExecution,
+  PolicyEngine,
   normalizePlanTraceability,
   planSchema,
   redact,
   safeTargetUrl,
-  validateChangeReview,
-  validateEvidence,
   validateSettings,
-  validateTraceability,
-} from "./validation";
-import { killTree, resolveCommand, runCommand, which } from "./process";
+} from "./policy";
+import { killTree, resolveCommand, which } from "./process";
 import { resolveCodex } from "./codex";
-import { loadZenTaoCatalog, normalizeZenTaoBaseUrl } from "./zentao";
+import { ZenTaoIssueProvider, type IssueProvider } from "./providers/issue";
+import { WeComNotifier, type WeComTransport } from "./providers/wecom";
+import type { TaskNotification } from "./providers/notification";
 
 interface Credentials {
   available(): boolean;
@@ -56,196 +49,27 @@ interface Credentials {
   setMany(values: Record<string, string>): void;
   secrets(): string[];
 }
-const string = { type: "string" };
-const strings = { type: "array", items: string };
-const caseSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    id: string,
-    title: string,
-    covers: strings,
-    verifies: strings,
-    priority: { type: "string", enum: ["P0", "P1", "P2"] },
-    steps: strings,
-    expected: string,
-  },
-  required: [
-    "id",
-    "title",
-    "covers",
-    "verifies",
-    "priority",
-    "steps",
-    "expected",
-  ],
-};
-const requirementSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    id: string,
-    text: string,
-    priority: { type: "string", enum: ["P0", "P1", "P2"] },
-    source: {
-      type: "string",
-      enum: ["description", "design", "attachment", "manual", "bug"],
-    },
-  },
-  required: ["id", "text", "priority", "source"],
-};
-const planStepSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    id: string,
-    title: string,
-    covers: strings,
-    expectedFiles: strings,
-  },
-  required: ["id", "title", "covers", "expectedFiles"],
-};
-export const planJsonSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    summary: string,
-    requirements: { type: "array", items: requirementSchema },
-    planSteps: { type: "array", items: planStepSchema },
-    steps: strings,
-    risks: strings,
-    testCases: { type: "array", items: caseSchema },
-    blockers: strings,
-  },
-  required: [
-    "summary",
-    "requirements",
-    "planSteps",
-    "steps",
-    "risks",
-    "testCases",
-    "blockers",
-  ],
-};
-export const resultJsonSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    summary: string,
-    checks: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          name: string,
-          state: {
-            type: "string",
-            enum: ["passed", "failed", "blocked", "unexecuted"],
-          },
-          detail: string,
-          evidence: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                kind: {
-                  type: "string",
-                  enum: [
-                    "command",
-                    "log",
-                    "screenshot",
-                    "trace",
-                    "dom",
-                    "coverage",
-                    "manual",
-                  ],
-                },
-                path: { type: ["string", "null"] },
-                command: { type: ["string", "null"] },
-                exitCode: { type: ["number", "null"] },
-                summary: string,
-                sha256: { type: ["string", "null"] },
-              },
-              required: [
-                "kind",
-                "path",
-                "command",
-                "exitCode",
-                "summary",
-                "sha256",
-              ],
-            },
-          },
-          covers: strings,
-          verifies: strings,
-        },
-        required: ["name", "state", "detail", "evidence", "covers", "verifies"],
-      },
-    },
-  },
-  required: ["summary", "checks"],
-};
-const resultSchema = z.object({
-  summary: z.string(),
-  checks: z
-    .array(
-      z.object({
-        name: z.string(),
-        state: z.enum(["passed", "failed", "blocked", "unexecuted"]),
-        detail: z.string(),
-        evidence: z
-          .array(
-            z.object({
-              kind: z.enum([
-                "command",
-                "log",
-                "screenshot",
-                "trace",
-                "dom",
-                "coverage",
-                "manual",
-              ]),
-              path: z
-                .string()
-                .nullable()
-                .optional()
-                .transform((v) => v ?? undefined),
-              command: z
-                .string()
-                .nullable()
-                .optional()
-                .transform((v) => v ?? undefined),
-              exitCode: z
-                .number()
-                .nullable()
-                .optional()
-                .transform((v) => v ?? undefined),
-              summary: z.string(),
-              sha256: z
-                .string()
-                .nullable()
-                .optional()
-                .transform((v) => v ?? undefined),
-            }),
-          )
-          .optional(),
-        covers: z.array(z.string()).optional(),
-        verifies: z.array(z.string()).optional(),
-      }),
-    )
-    .min(1),
-});
+import {
+  planJsonSchema,
+  resultJsonSchema,
+  resultSchema,
+} from "./providers/agent-schemas";
+export { planJsonSchema, resultJsonSchema } from "./providers/agent-schemas";
 export class StudioService {
   private synchronizations = new Map<string, Promise<RepositoryInfo>>();
   private syncControllers = new Map<string, AbortController>();
   readonly assets: AssetManager;
   private active = new Map<string, AbortController>();
-  private queue: TaskQueue;
+  private workflow: WorkflowEngine;
+  private evidence: EvidenceStore;
+  private agentProvider: AgentProvider;
+  private scm: SCMProvider;
+  private issue: IssueProvider;
+  private policy: PolicyEngine;
   private delivering = new Set<string>();
   private closing = false;
-  private agents = new Map<string, Awaited<ReturnType<typeof resolveCodex>>>();
+  private wecom?: WeComNotifier;
+  private wecomTransport?: WeComTransport;
   private sealed = new Map<string, { error?: string; message: string }>();
   private servers = new Map<
     string,
@@ -260,14 +84,43 @@ export class StudioService {
       url: string,
       context?: { title: string; branch: string; external?: boolean },
     ) => Promise<void>,
+    providers: {
+      agent?: AgentProvider;
+      scm?: SCMProvider;
+      issue?: IssueProvider;
+      policy?: PolicyEngine;
+      wecomTransport?: WeComTransport;
+    } = {},
   ) {
-    this.assets = new AssetManager(path.join(store.directory, "assets"));
-    this.queue = new TaskQueue(
+    this.wecomTransport = providers.wecomTransport;
+    this.evidence = new EvidenceStore(store.directory, (value) =>
+      this.sanitized(value),
+    );
+    this.assets = this.evidence.assets;
+    this.scm = providers.scm ?? GitSCMProvider;
+    this.issue = providers.issue ?? ZenTaoIssueProvider;
+    this.policy = providers.policy ?? new PolicyEngine();
+    this.agentProvider =
+      providers.agent ??
+      new CodexAgentProvider(
+        () => store.settings(),
+        this.evidence,
+        (value) => this.sanitized(value),
+      );
+    this.workflow = new WorkflowEngine(
+      {
+        save: (task) => {
+          this.publish(task);
+        },
+        log: (task, stage, message) => this.log(task, stage, message),
+        sanitize: (message) => this.safe(message),
+      },
+      this.evidence,
       () => this.store.settings().execution?.concurrency ?? 2,
     );
   }
   public get busy() {
-    return this.queue.busy || this.delivering.size > 0;
+    return this.workflow.busy || this.delivering.size > 0;
   }
   private safe(s: string) {
     let secrets: string[] = [];
@@ -292,6 +145,10 @@ export class StudioService {
     for (const p of settings.projects)
       p.hasSecret = this.vault.has("git:" + p.id);
     settings.zentao.hasSecret = this.vault.has("zentao");
+    settings.notifications.wecom = {
+      enabled: settings.notifications.wecom?.enabled ?? false,
+      hasSecret: this.vault.has("wecom"),
+    };
     if (settings.updates)
       settings.updates.hasSecret = this.vault.has("updates");
     return settings;
@@ -332,6 +189,7 @@ export class StudioService {
     const validKeys = new Set([
       "zentao",
       "updates",
+      "wecom",
       ...settings.projects.map((p) => "git:" + p.id),
     ]);
     if (secrets) {
@@ -341,6 +199,8 @@ export class StudioService {
     }
     for (const p of settings.projects) delete p.hasSecret;
     delete settings.zentao.hasSecret;
+    if (settings.notifications.wecom)
+      delete settings.notifications.wecom.hasSecret;
     if (settings.updates) delete settings.updates.hasSecret;
     this.store.saveSettings(settings);
     for (const task of this.store.tasks()) {
@@ -416,11 +276,12 @@ export class StudioService {
     if (existing) return wait(existing);
     const syncController = new AbortController();
     this.syncControllers.set(key, syncController);
-    const work = syncRepository(
-      project,
-      this.vault.get("git:" + project.id),
-      syncController.signal,
-    )
+    const work = this.scm
+      .syncRepository(
+        project,
+        this.vault.get("git:" + project.id),
+        syncController.signal,
+      )
       .then((info) => {
         if (info.syncedAt && info.syncRemote) {
           const history = this.syncHistory();
@@ -455,7 +316,7 @@ export class StudioService {
             task.projectId === id &&
             !task.workspace &&
             task.workspaceMode !== "isolated" &&
-            this.queue.has(task.id),
+            this.workflow.has(task.id),
         )
     )
       throw new Error("此项目原工作区正在执行，请稍后同步远程");
@@ -467,7 +328,7 @@ export class StudioService {
         syncError = this.safe((error as Error).message);
       }
     }
-    const info = await inspectRepository(project.directory);
+    const info = await this.scm.inspectRepository(project.directory);
     const history = this.syncHistory()[id];
     return {
       ...info,
@@ -496,9 +357,17 @@ export class StudioService {
   }
   public async testConnection(target: string, projectId?: string) {
     try {
+      if (target === "wecom") {
+        this.assertWeComEnabled();
+        await this.wecomNotifier().test();
+        return {
+          ok: true,
+          message: "企业微信已确认接收测试通知，请在测试群核对消息",
+        };
+      }
       if (target === "git") {
         const project = this.project(projectId ?? "");
-        return await gitConnection(
+        return await this.scm.gitConnection(
           project,
           this.vault.get("git:" + project.id),
         );
@@ -534,11 +403,37 @@ export class StudioService {
       return { ok: false, message: this.safe(String(e)) };
     }
   }
+  private assertWeComEnabled() {
+    const settings = this.store.settings();
+    if (
+      !settings.notifications.enabled ||
+      !settings.notifications.wecom?.enabled
+    )
+      throw new Error("请先启用并保存企业微信通知");
+    if (!this.vault.has("wecom"))
+      throw new Error("请先填写并保存企业微信 Webhook");
+  }
+  private wecomNotifier() {
+    return (this.wecom ??= new WeComNotifier(
+      this.store.directory,
+      () => this.vault.get("wecom"),
+      this.wecomTransport,
+    ));
+  }
+  public async sendWeCom(message: TaskNotification, task: Task) {
+    this.assertWeComEnabled();
+    await this.wecomNotifier().send(
+      message,
+      task,
+      this.store.settings(),
+      (value) => this.safe(value),
+    );
+  }
   public async zentaoCatalog() {
     const settings = this.store.settings().zentao;
     if (!settings.enabled || !settings.url)
       throw new Error("请先启用并保存禅道连接");
-    return loadZenTaoCatalog(
+    return this.issue.loadCatalog(
       settings.url,
       settings.username,
       this.vault.get("zentao"),
@@ -549,7 +444,7 @@ export class StudioService {
     if (!settings.enabled || !settings.url)
       throw new Error("请先启用并保存禅道连接");
     if (!/^\d{1,12}$/.test(id)) throw new Error("禅道条目 ID 格式不正确");
-    const target = new URL(normalizeZenTaoBaseUrl(settings.url));
+    const target = new URL(this.issue.normalizeBaseUrl(settings.url));
     target.pathname =
       target.pathname.replace(/\/?$/, "/") + `${type}-view-${id}.html`;
     target.search = "";
@@ -557,7 +452,7 @@ export class StudioService {
     await this.openUrl(target.href);
   }
   public saveTask(input: TaskInput, id?: string) {
-    if (id && this.queue.has(id))
+    if (id && this.workflow.has(id))
       throw new Error("正在执行或排队的任务无法修改");
     const normalized: TaskInput = {
       ...input,
@@ -592,13 +487,16 @@ export class StudioService {
     message: string,
     level: "info" | "error" | "success" = "info",
   ) {
-    task.logs.push({
-      time: new Date().toISOString(),
-      stage,
-      level,
-      message: this.safe(message).slice(0, 12000),
-    });
+    task.logs.push(
+      this.evidence.appendLog(
+        task,
+        stage,
+        this.safe(message).slice(0, 12000),
+        level,
+      ),
+    );
     task.logs = task.logs.slice(-2000);
+    if (task.activity) task.activity.lastOutputAt = new Date().toISOString();
     if (Date.now() - (this.lastLogFlush.get(task.id) ?? 0) > 150) {
       this.publish(task);
       this.lastLogFlush.set(task.id, Date.now());
@@ -614,8 +512,14 @@ export class StudioService {
     },
   ): Promise<Task> {
     if (this.closing) throw new Error("客户端正在关闭");
-    const task = this.store.getTask(id);
-    canAct(task, action);
+    if (this.delivering.has(id))
+      throw new Error("此任务正在提交或推送，请等待完成后再操作");
+    let task = this.store.getTask(id);
+    this.policy.authorize(task, action);
+    if (action === "retry" && task.failure?.checkpointId === "delivery:push") {
+      if (options?.supplement) await this.action(id, "supplement", options);
+      return this.action(id, "accept");
+    }
     if (action === "analyze" && options?.planFeedback?.trim()) {
       if (!task.plan)
         throw new Error("请先完成评估，再对开发计划或测试用例提出修改意见");
@@ -625,8 +529,8 @@ export class StudioService {
       task.planFeedback = undefined;
     }
     if (action === "stop") {
-      if (!this.queue.has(id)) throw new Error("当前任务没有活动进程");
-      this.queue.cancelWaiting(id);
+      if (!this.workflow.has(id)) throw new Error("当前任务没有活动进程");
+      this.workflow.cancelWaiting(id);
       this.active.get(id)?.abort();
       task.queued = undefined;
       task.status = "stopped";
@@ -634,24 +538,22 @@ export class StudioService {
       return this.publish(task);
     }
     if (action === "pause") {
-      if (!this.active.has(id) || task.stage !== "development")
-        throw new Error("当前 Bug 没有正在执行的修复进程");
-      this.sealed.set(id, {
-        message:
-          "用户已暂停 Bug 修复，当前代码、执行快照与日志均已保留，等待补充信息后继续。",
-      });
-      this.active.get(id)!.abort();
+      if (!this.workflow.has(id)) throw new Error("当前任务没有活动或排队进程");
+      const message =
+        task.kind === "bug" && task.stage === "development"
+          ? "用户已暂停 Bug 修复，当前代码、执行快照与日志均已保留，等待补充信息后继续。"
+          : "用户已暂停当前阶段，已通过检查点、代码与日志保留，等待补充信息后继续。";
+      if (this.active.has(id)) this.sealed.set(id, { message });
+      this.workflow.cancelWaiting(id);
+      this.active.get(id)?.abort();
+      task.queued = undefined;
       task.status = "stopped";
       task.error = undefined;
-      this.log(
-        task,
-        "development",
-        "用户已暂停 Bug 修复，当前代码、执行快照与日志均已保留，等待补充信息后继续。",
-      );
+      this.log(task, task.stage ?? "analysis", message);
       return this.publish(task);
     }
     if (action === "terminate") {
-      this.queue.cancelWaiting(id);
+      this.workflow.cancelWaiting(id);
       this.active.get(id)?.abort();
       task.queued = undefined;
       const server = this.servers.get(id);
@@ -679,7 +581,7 @@ export class StudioService {
               (other) =>
                 other.id !== id &&
                 other.projectId === task.projectId &&
-                this.queue.has(other.id) &&
+                this.workflow.has(other.id) &&
                 !other.workspace &&
                 other.workspaceMode !== "isolated",
             )
@@ -721,28 +623,40 @@ export class StudioService {
         }
         const diffReview = await this.diffGate(task);
         this.assertPassed(
-          validateChangeReview(diffReview),
+          this.policy.changes(diffReview),
           "验收前差异审查未通过，请检查计划外或未覆盖改动",
         );
         this.log(task, "startup", `验收通过，提交并推送到 ${branch}`);
         try {
-          const result = await commitAndPush(
-            project,
-            this.vault.get("git:" + project.id),
-            branch,
-            task.title,
-            settings.developer,
-            task.delivery?.commit,
-            (committed) => {
-              task.delivery = committed;
-              this.log(
-                task,
-                "startup",
-                `已创建本地提交 ${committed.commit.slice(0, 8)}，正在推送到 ${committed.remote}/${committed.branch}`,
-              );
-              this.publish(task);
-            },
-            { PATH: executablePath(settings.agent.command) },
+          task.stage = "startup";
+          task.failure = undefined;
+          const result = await this.checkpoint(
+            task,
+            "delivery:push",
+            "提交与远程推送",
+            "git",
+            new AbortController().signal,
+            fingerprint(project.id, branch),
+            async () =>
+              this.scm.commitAndPush(
+                project,
+                this.vault.get("git:" + project.id),
+                branch,
+                task.title,
+                settings.developer,
+                task.delivery?.commit,
+                (committed) => {
+                  task.delivery = committed;
+                  this.log(
+                    task,
+                    "startup",
+                    `已创建本地提交 ${committed.commit.slice(0, 8)}，正在推送到 ${committed.remote}/${committed.branch}`,
+                  );
+                  this.publish(task);
+                },
+                { PATH: executablePath(settings.agent.command) },
+              ),
+            { reuse: false },
           );
           task.delivery = {
             ...result,
@@ -773,10 +687,16 @@ export class StudioService {
       this.active.has(id) &&
       task.status === "stopped"
     ) {
-      for (let attempt = 0; attempt < 100 && this.active.has(id); attempt++)
+      for (let attempt = 0; attempt < 200 && this.active.has(id); attempt++)
         await new Promise((resolve) => setTimeout(resolve, 50));
+      if (this.active.has(id))
+        throw new Error("前一次执行仍在停止中，请稍后重试");
+      task = this.store.getTask(id);
     }
-    if (action === "retry" && options?.supplement) {
+    if (
+      (action === "retry" || action === "supplement") &&
+      options?.supplement
+    ) {
       const text = options.supplement.text?.trim().slice(0, 8000);
       const ids = [...new Set(options.supplement.assetIds ?? [])];
       if (!text && !ids.length) throw new Error("请填写补充信息或添加附件");
@@ -801,21 +721,33 @@ export class StudioService {
       this.log(
         task,
         task.stage ?? "analysis",
-        `已补充失败上下文：${text ? "文字说明" : ""}${text && ids.length ? "、" : ""}${ids.length ? `${ids.length} 个附件` : ""}；保留原执行快照并重试当前阶段。`,
+        `已补充阶段上下文：${text ? "文字说明" : ""}${text && ids.length ? "、" : ""}${ids.length ? `${ids.length} 个附件` : ""}；已冻结需求范围保持不变。`,
       );
       this.publish(task);
+      if (action === "supplement") {
+        if (task.status === "ready" && !task.snapshot) {
+          task.plan = undefined;
+          task.status = "draft";
+          task.stage = "analysis";
+        } else if (
+          ["waiting-review", "review"].includes(task.status) &&
+          task.failure?.checkpointId !== "delivery:push"
+        ) {
+          const server = this.servers.get(id);
+          if (server) {
+            killTree(server.child);
+            this.servers.delete(id);
+          }
+          task.stage = task.testExecution ? "test" : "development";
+          task.status = "stopped";
+          task.error = undefined;
+        }
+        return this.publish(task);
+      }
     }
-    if (this.queue.has(id)) throw new Error("该任务已在执行或排队");
-    const stage: Stage =
-      action === "analyze"
-        ? "analysis"
-        : action === "develop" || action === "repair" || action === "fix"
-          ? "development"
-          : action === "test"
-            ? "test"
-            : action === "start"
-              ? "startup"
-              : (task.stage ?? "analysis");
+    if (action === "supplement") throw new Error("请填写补充信息或添加附件");
+    if (this.workflow.has(id)) throw new Error("该任务已在执行或排队");
+    const stage = this.workflow.stageFor(task, action);
     if (
       stage === "development" &&
       !task.plan &&
@@ -827,6 +759,13 @@ export class StudioService {
       throw new Error("执行快照缺失");
     task.stage = stage;
     task.error = undefined;
+    task.failure = undefined;
+    if (action === "repair")
+      this.workflow.invalidate(
+        task,
+        ["development:agent", "development:policy", "test"],
+        "主动修复：重新执行开发，旧测试结果需重新确认",
+      );
     task.status = "queued";
     task.queued = { action, at: new Date().toISOString() };
     const directFix =
@@ -849,10 +788,25 @@ export class StudioService {
         "development",
         "用户已明确确认保留未提交修改并继续；现有修改可能与本次开发一同进入检查、提交和推送。",
       );
-    const source =
-      task.snapshot?.project.directory ??
-      this.project(task.projectId).directory;
-    const canonical = fs.realpathSync(source);
+    let canonical: string;
+    try {
+      canonical = fs.realpathSync.native(
+        task.snapshot?.project.directory ??
+          this.project(task.projectId).directory,
+      );
+    } catch (error) {
+      task.failure = failureDetail(
+        error,
+        stage,
+        `${stage}:environment`,
+        "environment",
+        (s) => this.safe(s),
+      );
+      task.error = task.failure.message;
+      task.status = "failed";
+      task.queued = undefined;
+      return this.publish(task);
+    }
     const resource =
       stage === "startup"
         ? "preview-start"
@@ -861,7 +815,7 @@ export class StudioService {
           : process.platform === "win32"
             ? canonical.toLowerCase()
             : canonical;
-    this.queue.enqueue(id, resource, async () => {
+    this.workflow.enqueue(id, resource, async () => {
       const controller = new AbortController();
       this.active.set(id, controller);
       task.queued = undefined;
@@ -872,14 +826,43 @@ export class StudioService {
         startup: "starting",
       }[stage] as Task["status"];
       this.publish(task);
-      await this.run(
-        task,
-        stage,
-        controller.signal,
-        forceTests,
-        directFix,
-        options?.allowDirty === true,
-      )
+      await this.workflow
+        .execute(
+          task,
+          stage,
+          controller.signal,
+          {
+            analysis: () => this.analyze(task, controller.signal),
+            development: async () => {
+              if (directFix && !task.snapshot)
+                await this.prepareDirectFix(task, controller.signal);
+              await this.develop(
+                task,
+                controller.signal,
+                directFix,
+                options?.allowDirty === true,
+              );
+            },
+            test: () => this.test(task, controller.signal),
+            startup: () =>
+              this.checkpoint(
+                task,
+                "startup:runtime",
+                "启动与运行验证",
+                "environment",
+                controller.signal,
+                fingerprint(
+                  task.runtime,
+                  this.store
+                    .settings()
+                    .projects.find((p) => p.id === task.projectId),
+                ),
+                () => this.start(task, controller.signal),
+                { reuse: false },
+              ),
+          },
+          { forceTests },
+        )
         .catch((error) => {
           if (this.sealed.has(id)) {
             const state = this.sealed.get(id)!;
@@ -894,6 +877,13 @@ export class StudioService {
           task.error = this.safe(
             error instanceof Error ? error.message : String(error),
           );
+          task.failure ??= failureDetail(
+            error,
+            task.stage ?? stage,
+            `${task.stage ?? stage}:preflight`,
+            "environment",
+            (s) => this.safe(s),
+          );
           this.log(task, task.stage ?? stage, task.error, "error");
           this.publish(task);
         })
@@ -901,126 +891,10 @@ export class StudioService {
           this.active.delete(id);
           this.sealed.delete(id);
           this.lastLogFlush.delete(id);
-          this.agents.delete(id);
+          this.agentProvider.clear(id);
         });
     });
     return this.store.getTask(id);
-  }
-  private async recorded(
-    task: Task,
-    stage: Stage,
-    signal: AbortSignal,
-    work: () => Promise<void>,
-  ) {
-    const startedAt = new Date().toISOString();
-    task.stage = stage;
-    let error: unknown;
-    try {
-      await work();
-    } catch (e) {
-      error = e;
-      throw e;
-    } finally {
-      const record: NonNullable<Task["runs"]>[number] = {
-        id: randomUUID(),
-        stage,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        status: error ? (signal.aborted ? "stopped" : "failed") : "passed",
-        checks: structuredClone(task.checks),
-        error: error ? this.safe(String(error)) : undefined,
-      };
-      task.runs = [...(task.runs ?? []), record].slice(-50);
-      const sealed = this.sealed.get(task.id);
-      if (sealed) {
-        task.status = "stopped";
-        task.error = sealed.error;
-        this.log(task, stage, sealed.message);
-      }
-      this.publish(task);
-    }
-  }
-  private async run(
-    task: Task,
-    stage: Stage,
-    signal: AbortSignal,
-    forceTests = false,
-    directFix = false,
-    allowDirty = false,
-  ) {
-    if (stage !== "startup") await this.checkedAgent(task, signal);
-    if (stage === "analysis") {
-      await this.recorded(task, stage, signal, () =>
-        this.analyze(task, signal),
-      );
-      return;
-    }
-    if (stage === "development") {
-      if (directFix && !task.snapshot)
-        await this.prepareDirectFix(task, signal);
-      await this.recorded(task, stage, signal, () =>
-        this.develop(task, signal, directFix, allowDirty),
-      );
-      if (task.kind === "bug" && !forceTests) {
-        task.stage = "startup";
-        task.status = "waiting-review";
-        this.log(
-          task,
-          "startup",
-          "开发修复已完成，等待选择由 Studio 启动项目验证，或使用已运行的项目自行验证。",
-          "success",
-        );
-        this.publish(task);
-        return;
-      } else if (!task.autoTest && !forceTests) {
-        task.status = "waiting-test";
-        this.publish(task);
-        return;
-      } else {
-        stage = "test";
-      }
-    }
-    if (stage === "test") {
-      await this.recorded(task, stage, signal, () => this.test(task, signal));
-      task.stage = "startup";
-      task.status = "waiting-review";
-      this.log(
-        task,
-        "startup",
-        "自动化检查完成，等待按需启动项目或自行验证。",
-        "success",
-      );
-      this.publish(task);
-      return;
-    }
-    if (stage === "startup")
-      await this.recorded(task, stage, signal, () => this.start(task, signal));
-  }
-  private async checkedAgent(task: Task, signal: AbortSignal) {
-    const cached = this.agents.get(task.id);
-    if (cached) return cached;
-    const cwd =
-      task.snapshot?.project.directory ??
-      this.project(task.projectId).directory;
-    const agent = await resolveCodex(this.store.settings().agent.command, {
-      cwd,
-      signal,
-    });
-    try {
-      await runCommand(agent.command, ["login", "status"], {
-        cwd,
-        signal,
-        env: { CODEX_HOME: this.codexHome() },
-        timeout: 15_000,
-      });
-    } catch (error) {
-      if (signal.aborted) throw error;
-      throw new Error(
-        `Codex 登录检查未通过，请在终端执行 codex login 后重试。${this.safe((error as Error).message)}`,
-      );
-    }
-    this.agents.set(task.id, agent);
-    return agent;
   }
   private async agent(
     task: Task,
@@ -1030,97 +904,55 @@ export class StudioService {
     signal: AbortSignal,
   ) {
     const project = task.snapshot?.project ?? this.project(task.projectId);
-    const runDir = path.join(
-      this.store.directory,
-      "runs",
-      task.id,
-      randomUUID(),
-    );
-    fs.mkdirSync(runDir, { recursive: true });
-    const schemaFile = path.join(runDir, "schema.json");
-    const output = path.join(runDir, "result.json");
-    fs.writeFileSync(schemaFile, JSON.stringify(schema));
-    const args = [
-      "exec",
-      "--ignore-user-config",
-      ...(stage === "analysis"
-        ? ["--sandbox", "read-only"]
-        : ["--approve-for-me"]),
-      "--json",
-      "--ephemeral",
-      "--cd",
-      project.directory,
-      "--output-schema",
-      schemaFile,
-      "--output-last-message",
-      output,
-      "-",
-    ];
-    this.log(
-      task,
+    return this.agentProvider.invoke({
+      taskId: task.id,
+      directory: project.directory,
+      projectName: project.name,
       stage,
-      `Codex · ${stage === "analysis" ? "只读评估" : "工作区执行"} · ${project.name}`,
-    );
-    try {
-      const agent = await this.checkedAgent(task, signal);
-      this.log(
-        task,
-        stage,
-        `${agent.version} · ${agent.command.executable} ${agent.command.args.join(" ")}` +
-          (agent.fallback ? " · 已跳过旧版 CLI，使用检测到的最新兼容版本" : ""),
-      );
-      await runCommand(agent.command, args, {
-        cwd: project.directory,
-        signal,
-        input: prompt,
-        env: { CODEX_HOME: this.codexHome() },
-        timeout: 30 * 60_000,
-        onLine: (line, error) => {
-          try {
-            const event = JSON.parse(line);
-            if (event.type === "item.completed" && event.item) {
-              const item = event.item;
-              this.log(
-                task,
-                stage,
-                typeof item.text === "string"
-                  ? item.text
-                  : typeof item.aggregated_output === "string"
-                    ? `${item.command ?? ""}\n${item.aggregated_output}`
-                    : JSON.stringify(item),
-                item.status === "failed" ? "error" : "info",
-              );
-            } else if (event.type === "error" || event.type === "turn.failed")
-              this.log(task, stage, JSON.stringify(event), "error");
-          } catch {
-            if (line.trim())
-              this.log(task, stage, line, error ? "error" : "info");
-          }
-        },
-      });
-      if (signal.aborted) throw new Error("任务已停止");
-      if (!fs.existsSync(output))
-        throw new Error("Agent 未生成结构化结果，不能继续下一阶段");
-      if (fs.statSync(output).size > 2_000_000)
-        throw new Error("Agent 结果过大");
-      const result = fs.readFileSync(output, "utf8");
-      fs.unlinkSync(output);
-      if (Buffer.byteLength(result) > 2_000_000)
-        throw new Error("Agent 结果过大");
-      const clean = this.sanitized(JSON.parse(result));
-      fs.writeFileSync(output, JSON.stringify(clean, null, 2), { mode: 0o600 });
-      return clean;
-    } catch (error) {
-      if (fs.existsSync(output)) fs.unlinkSync(output);
-      throw error;
-    }
+      prompt,
+      schema,
+      signal,
+      log: (message, error) =>
+        this.log(task, stage, message, error ? "error" : "info"),
+      activity: (at, idleTimeoutMs) => {
+        task.activity = { ...task.activity, lastOutputAt: at, idleTimeoutMs };
+        if (Date.now() - (this.lastLogFlush.get(task.id) ?? 0) > 750) {
+          this.lastLogFlush.set(task.id, Date.now());
+          this.publish(task);
+        }
+      },
+    });
   }
-  private codexHome() {
-    // Refresh tokens rotate. Copying auth.json creates competing credential
-    // stores where one successful refresh invalidates the other copy.
-    // User configuration is still excluded by --ignore-user-config and task
-    // sessions remain ephemeral, so only the canonical credential store is shared.
-    return process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
+  private checkpoint<T>(
+    task: Task,
+    id: string,
+    label: string,
+    category: FailureCategory,
+    signal: AbortSignal,
+    key: string,
+    work: () => Promise<T>,
+    options: { reuse?: boolean; after?: () => Promise<string> } = {},
+  ) {
+    return this.workflow.step(
+      task,
+      {
+        id,
+        label,
+        category,
+        stage: task.stage ?? "analysis",
+        fingerprint: key,
+        ...options,
+      },
+      signal,
+      work,
+    );
+  }
+  private contextHash(task: Task) {
+    return fingerprint(
+      task.description,
+      task.assets.map((asset) => asset.sha256),
+      task.supplements ?? [],
+    );
   }
   private context(task: Task, includeWorkflow = true) {
     const settings = this.store.settings();
@@ -1150,13 +982,28 @@ export class StudioService {
       "development",
       "同步所选分支，直接调用 Codex 定位并修复 Bug。",
     );
-    const info = await this.synchronize(project, signal);
+    const info = await this.checkpoint(
+      task,
+      "development:scm",
+      "同步 Bug 目标分支",
+      "git",
+      signal,
+      fingerprint(task.branch),
+      () => this.synchronize(project, signal),
+      { reuse: false },
+    );
     if (signal.aborted) throw new Error("任务已停止");
     this.assertSynchronizedTarget(task, info);
     task.baseCommit = info.commit;
-    task.targetCommit = await resolveTargetCommit(
-      project.directory,
-      task.branch,
+    task.targetCommit = await this.checkpoint(
+      task,
+      "development:target",
+      "确认 Bug 目标版本",
+      "git",
+      signal,
+      fingerprint(task.branch),
+      () => this.scm.resolveTargetCommit(project.directory, task.branch),
+      { reuse: false },
     );
     task.plan = {
       summary:
@@ -1200,7 +1047,7 @@ export class StudioService {
     };
     task.gateReviews = {
       ...(task.gateReviews ?? {}),
-      traceability: validateTraceability(task.plan),
+      traceability: this.policy.traceability(task.plan),
     };
     task.planRevision++;
     this.publish(task);
@@ -1217,29 +1064,61 @@ export class StudioService {
       );
     const project = this.project(task.projectId);
     this.log(task, "analysis", "同步远程分支和标签，保留本地工作区");
-    const info = await this.synchronize(project, signal);
+    const info = await this.checkpoint(
+      task,
+      "analysis:scm",
+      "同步评估目标分支",
+      "git",
+      signal,
+      fingerprint(task.branch),
+      () => this.synchronize(project, signal),
+      { reuse: false },
+    );
     if (signal.aborted) throw new Error("任务已停止");
     this.assertSynchronizedTarget(task, info);
     task.baseCommit = info.commit;
-    task.targetCommit = await resolveTargetCommit(
-      project.directory,
-      task.branch,
+    task.targetCommit = await this.checkpoint(
+      task,
+      "analysis:target",
+      "确认评估目标版本",
+      "git",
+      signal,
+      fingerprint(task.branch),
+      () => this.scm.resolveTargetCommit(project.directory, task.branch),
+      { reuse: false },
     );
     this.log(
       task,
       "analysis",
       `工程 ${project.name} · ${info.branch} · ${info.commit.slice(0, 8)}${info.dirty ? " · 存在未提交修改（执行前需处理）" : ""}`,
     );
-    const result = await this.agent(
+    const result = await this.checkpoint(
       task,
-      "analysis",
-      this.context(task) +
-        (task.plan && task.planFeedback
-          ? `The user is revising the previous assessment. Keep the original requirement intent, but regenerate the implementation plan and test cases to satisfy the feedback. Do not ignore the feedback. Previous plan JSON:\n${JSON.stringify(task.plan)}\nUser feedback on the plan and test cases:\n${task.planFeedback}\n`
-          : "") +
-        `Read-only assessment ONLY; do not modify any files or run write-producing commands. User has not yet approved execution of this particular task. Inspect source and relevant design assets; produce implementation plan and concrete test cases in Chinese. For Bug inputs, do not claim reproduction without evidence; include reproduction first and blockers for missing environment. Selected branch configuration: ${JSON.stringify(task.branch)}. The selected target commit is ${task.targetCommit}. Inspect that exact tree using git show / git ls-tree, even if current checkout differs. Do not assess another revision. Use structured result schema. Include blockers only for information required to proceed.`,
-      planJsonSchema,
+      "analysis:agent",
+      "需求评估与计划生成",
+      "agent",
       signal,
+      fingerprint(
+        task.targetCommit,
+        task.branch,
+        this.contextHash(task),
+        task.planFeedback,
+        settings.agent.tyflowDirectory,
+      ),
+      async () =>
+        planSchema.parse(
+          await this.agent(
+            task,
+            "analysis",
+            this.context(task) +
+              (task.plan && task.planFeedback
+                ? `The user is revising the previous assessment. Keep the original requirement intent, but regenerate the implementation plan and test cases to satisfy the feedback. Do not ignore the feedback. Previous plan JSON:\n${JSON.stringify(task.plan)}\nUser feedback on the plan and test cases:\n${task.planFeedback}\n`
+                : "") +
+              `Read-only assessment ONLY; do not modify any files or run write-producing commands. User has not yet approved execution of this particular task. Inspect source and relevant design assets; produce implementation plan and concrete test cases in Chinese. For Bug inputs, do not claim reproduction without evidence; include reproduction first and blockers for missing environment. Selected branch configuration: ${JSON.stringify(task.branch)}. The selected target commit is ${task.targetCommit}. Inspect that exact tree using git show / git ls-tree, even if current checkout differs. Do not assess another revision. Use structured result schema. Include blockers only for information required to proceed.`,
+            planJsonSchema,
+            signal,
+          ),
+        ),
     );
     task.plan = normalizePlanTraceability(
       planSchema.parse(result),
@@ -1249,7 +1128,7 @@ export class StudioService {
     task.planFeedback = undefined;
     task.gateReviews = {
       ...(task.gateReviews ?? {}),
-      traceability: validateTraceability(task.plan),
+      traceability: this.policy.traceability(task.plan),
     };
     task.status = "ready";
     this.log(
@@ -1262,7 +1141,9 @@ export class StudioService {
   }
   private async assertSnapshot(task: Task) {
     if (!task.snapshot) throw new Error("任务没有冻结快照");
-    const info = await inspectRepository(task.snapshot.project.directory);
+    const info = await this.scm.inspectRepository(
+      task.snapshot.project.directory,
+    );
     const expectedBranch =
       task.snapshot.branch.mode === "new"
         ? task.snapshot.branch.name
@@ -1271,7 +1152,9 @@ export class StudioService {
       info.branch !== expectedBranch ||
       info.commit !== task.snapshot.baseCommit
     )
-      throw new Error(
+      throw new ProviderFailure(
+        "git",
+        "SNAPSHOT_CHANGED",
         "工作目录的分支或提交已改变，已停止执行以保护现有工作；请核对后恢复原分支/提交再重试",
       );
     return info;
@@ -1288,19 +1171,21 @@ export class StudioService {
     message: string,
   ) {
     if (checks.some((check) => check.state !== "passed"))
-      throw new Error(message);
+      throw new ProviderFailure("policy", "GATE_BLOCKED", message);
   }
   private traceabilityGate(task: Task) {
     if (!task.plan) throw new Error("开发计划缺失");
     task.plan = normalizePlanTraceability(task.plan, this.sourceKind(task));
-    const checks = validateTraceability(task.plan);
+    const checks = this.policy.traceability(task.plan);
     task.gateReviews = { ...(task.gateReviews ?? {}), traceability: checks };
     return checks;
   }
   private async diffGate(task: Task): Promise<ChangeReview> {
     if (!task.snapshot) throw new Error("执行快照缺失");
-    const info = await inspectRepository(task.snapshot.project.directory);
-    const files = await changedFilesSince(
+    const info = await this.scm.inspectRepository(
+      task.snapshot.project.directory,
+    );
+    const files = await this.scm.changedFilesSince(
       task.snapshot.project.directory,
       task.snapshot.baseCommit,
     );
@@ -1374,7 +1259,7 @@ export class StudioService {
   private planHash(task: Task) {
     if (!task.snapshot) throw new Error("执行快照缺失");
     return createHash("sha256")
-      .update(JSON.stringify(task.snapshot.plan))
+      .update(JSON.stringify(task.snapshot!.plan))
       .digest("hex");
   }
   private async sourceSnapshot(task: Task) {
@@ -1384,12 +1269,36 @@ export class StudioService {
       a.localeCompare(b),
     ))
       hash.update(`\n${file}:${digest}`);
+    const directory = task.snapshot!.project.directory;
+    const environmentFiles = fs
+      .readdirSync(directory)
+      .filter(
+        (name) =>
+          /^\.env(?:\.|$)/.test(name) &&
+          fs.statSync(path.join(directory, name)).isFile(),
+      );
+    for (const name of [
+      ...environmentFiles,
+      ".npmrc",
+      "node_modules/.studio-dependencies",
+    ].sort())
+      hash.update(
+        `\n${name}:${this.fileDigest(path.join(task.snapshot!.project.directory, name))}`,
+      );
     return hash.digest("hex");
+  }
+  private fileDigest(file: string) {
+    return fs.existsSync(file)
+      ? createHash("sha256").update(fs.readFileSync(file)).digest("hex")
+      : "missing";
   }
   private async workspaceFileState(task: Task) {
     if (!task.snapshot) throw new Error("执行快照缺失");
     const root = task.snapshot.project.directory;
-    const files = await changedFilesSince(root, task.snapshot.baseCommit);
+    const files = await this.scm.changedFilesSince(
+      root,
+      task.snapshot.baseCommit,
+    );
     const state: Record<string, string> = {};
     for (const file of files.sort((a, b) => a.path.localeCompare(b.path))) {
       const absolute = path.resolve(root, file.path);
@@ -1406,6 +1315,14 @@ export class StudioService {
       state[file.path] =
         `${file.changeType}:${createHash("sha256").update(fs.readFileSync(absolute)).digest("hex")}`;
     }
+    for (const name of [
+      ...fs.readdirSync(root).filter((name) => /^\.env(?:\.|$)/.test(name)),
+      ".npmrc",
+    ]) {
+      const file = path.join(root, name);
+      if (fs.existsSync(file) && fs.statSync(file).isFile())
+        state[name] = `environment:${this.fileDigest(file)}`;
+    }
     return state;
   }
   private async develop(
@@ -1416,122 +1333,229 @@ export class StudioService {
   ) {
     if (!task.plan || task.plan.blockers.length)
       throw new Error("请先解决开发计划阻塞项");
-    this.assertPassed(
-      this.traceabilityGate(task),
-      "需求、计划与测试用例追踪矩阵不完整，请重新评估或修订计划后再开发",
+    await this.checkpoint(
+      task,
+      "development:traceability",
+      "需求与计划追踪硬闸",
+      "policy",
+      signal,
+      fingerprint(task.plan),
+      async () => {
+        const checks = this.traceabilityGate(task);
+        this.assertPassed(
+          checks,
+          "需求、计划与测试用例追踪矩阵不完整，请重新评估或修订计划后再开发",
+        );
+        return checks;
+      },
+      { reuse: false },
     );
     if (!task.snapshot) {
-      const project = this.project(task.projectId);
-      if (!task.baseCommit) throw new Error("评估版本缺失，请重新评估");
-      this.log(task, "development", "检查工作区并准备所选分支");
-      const synced = await this.synchronize(project, signal);
-      if (signal.aborted) throw new Error("任务已停止");
-      this.assertSynchronizedTarget(task, synced);
-      const latestTarget = await resolveTargetCommit(
-        project.directory,
-        task.branch,
-      );
-      if (
-        latestTarget !== task.targetCommit ||
-        (task.workspaceMode !== "isolated" && synced.commit !== task.baseCommit)
-      ) {
-        task.plan = undefined;
-        throw new Error("所选分支或版本在评估后有更新，请重新评估后再开始开发");
-      }
-      let prepared: { branch: string; commit: string };
-      let executionProject = project;
-      if (task.workspaceMode === "isolated") {
-        task.workspace = await prepareWorkspace(
-          project,
-          task,
-          this.store.directory,
-          signal,
-        );
-        executionProject = { ...project, directory: task.workspace.directory };
-        prepared = {
-          branch: task.workspace.branch,
-          commit: task.workspace.baseCommit,
-        };
-        this.log(
-          task,
-          "development",
-          `独立任务工作区：${task.workspace.directory} · ${prepared.branch}；原目录未提交代码不会带入此任务。`,
-        );
-        this.publish(task);
-        await installWorkspaceDependencies(
-          executionProject.directory,
-          signal,
-          (line) => this.log(task, "development", line),
-          this.store.settings().agent.command,
-        );
-      } else
-        prepared = await prepareBranch(
-          project.directory,
-          task.branch,
-          task.baseCommit,
-          task.targetCommit,
-          signal,
-          allowDirty,
-        );
-      this.log(
+      await this.checkpoint(
         task,
-        "development",
-        `分支已就绪：${prepared.branch} · ${prepared.commit.slice(0, 8)}（仅快进或创建跟踪分支，不自动提交/推送）`,
-      );
-      task.snapshot = {
-        project: { ...executionProject, hasSecret: undefined },
-        branch: {
-          ...task.branch,
-          ...(task.workspace
-            ? {
-                mode: "new" as const,
-                base: task.branch.base,
-                name: prepared.branch,
-              }
-            : {}),
-          ...(!task.workspace && task.branch.mode === "existing"
-            ? { base: prepared.branch, name: prepared.branch }
-            : {}),
+        "development:workspace",
+        "准备分支与冻结工作区",
+        "git",
+        signal,
+        fingerprint(task.branch, task.targetCommit, task.workspaceMode),
+        async () => {
+          const project = this.project(task.projectId);
+          if (!task.baseCommit) throw new Error("评估版本缺失，请重新评估");
+          this.log(task, "development", "检查工作区并准备所选分支");
+          const synced = await this.synchronize(project, signal);
+          if (signal.aborted) throw new Error("任务已停止");
+          this.assertSynchronizedTarget(task, synced);
+          const latestTarget = await this.scm.resolveTargetCommit(
+            project.directory,
+            task.branch,
+          );
+          if (
+            latestTarget !== task.targetCommit ||
+            (task.workspaceMode !== "isolated" &&
+              synced.commit !== task.baseCommit)
+          ) {
+            task.plan = undefined;
+            throw new Error(
+              "所选分支或版本在评估后有更新，请重新评估后再开始开发",
+            );
+          }
+          let prepared: { branch: string; commit: string };
+          let executionProject = project;
+          if (task.workspaceMode === "isolated") {
+            task.workspace = await prepareWorkspace(
+              project,
+              task,
+              this.store.directory,
+              signal,
+            );
+            executionProject = {
+              ...project,
+              directory: task.workspace.directory,
+            };
+            prepared = {
+              branch: task.workspace.branch,
+              commit: task.workspace.baseCommit,
+            };
+            this.log(
+              task,
+              "development",
+              `独立任务工作区：${task.workspace.directory} · ${prepared.branch}；原目录未提交代码不会带入此任务。`,
+            );
+            this.publish(task);
+          } else
+            prepared = await this.scm.prepareBranch(
+              project.directory,
+              task.branch,
+              task.baseCommit,
+              task.targetCommit,
+              signal,
+              allowDirty,
+            );
+          this.log(
+            task,
+            "development",
+            `分支已就绪：${prepared.branch} · ${prepared.commit.slice(0, 8)}（仅快进或创建跟踪分支，不自动提交/推送）`,
+          );
+          task.snapshot = {
+            project: { ...executionProject, hasSecret: undefined },
+            branch: {
+              ...task.branch,
+              ...(task.workspace
+                ? {
+                    mode: "new" as const,
+                    base: task.branch.base,
+                    name: prepared.branch,
+                  }
+                : {}),
+              ...(!task.workspace && task.branch.mode === "existing"
+                ? { base: prepared.branch, name: prepared.branch }
+                : {}),
+            },
+            plan: structuredClone(task.plan!),
+            description: task.description,
+            assetHashes: task.assets.map((a) => a.sha256),
+            at: new Date().toISOString(),
+            baseCommit: prepared.commit,
+            directFix,
+          };
+          task.approvedRevision = task.planRevision;
+          this.publish(task);
+          return task.snapshot!;
         },
-        plan: structuredClone(task.plan),
-        description: task.description,
-        assetHashes: task.assets.map((a) => a.sha256),
-        at: new Date().toISOString(),
-        baseCommit: prepared.commit,
-        directFix,
-      };
-      task.approvedRevision = task.planRevision;
-      this.publish(task);
+        { reuse: false },
+      );
     } else await this.assertSnapshot(task);
+    if (task.workspace)
+      await this.checkpoint(
+        task,
+        "development:dependencies",
+        "独立工作区依赖",
+        "environment",
+        signal,
+        fingerprint(
+          [
+            "package.json",
+            "package-lock.json",
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "node_modules/.studio-dependencies",
+          ].map((name) =>
+            this.fileDigest(path.join(task.snapshot!.project.directory, name)),
+          ),
+        ),
+        async () => {
+          await installWorkspaceDependencies(
+            task.snapshot!.project.directory,
+            signal,
+            (line) => this.log(task, "development", line),
+            this.store.settings().agent.command,
+          );
+          return true;
+        },
+        {
+          after: async () =>
+            fingerprint(
+              [
+                "package.json",
+                "package-lock.json",
+                "pnpm-lock.yaml",
+                "yarn.lock",
+                "node_modules/.studio-dependencies",
+              ].map((name) =>
+                this.fileDigest(
+                  path.join(task.snapshot!.project.directory, name),
+                ),
+              ),
+            ),
+        },
+      );
     if (signal.aborted) throw new Error("任务已停止");
     const priorFailures = task.checks.filter((c) => c.state !== "passed");
     task.checks = [];
     task.testExecution = undefined;
-    const result = resultSchema.parse(
-      await this.agent(
-        task,
-        "development",
-        this.context(task, !directFix) +
-          (directFix
-            ? `The user explicitly chose direct Bug repair. Diagnose the reported behavior from the description, evidence, and selected code revision; reproduce when practical, implement the smallest safe fix, and run meaningful checks. Do not create a separate planning checkpoint or ask for workflow confirmation. Never commit or push; do not switch branches. If evidence is insufficient, return blocked evidence instead of inventing a result. Return checks containing actual commands and observations.\nBug repair record:\n${JSON.stringify(task.snapshot.plan)}`
-            : `The user clicked Confirm Plan and Start Development, or explicitly Repair and Retest, in the desktop UI. Implement the following approved plan in this repository. Do not ask for the same approval again. Never commit or push; do not switch branches. Follow plan, inspect and preserve existing work on retries. Verification mode is ORCHESTRATED: Studio will invoke the configured professional test provider after development. During development run only focused, low-cost feedback checks needed to make the implementation safe; do not run the full Tyflow completion-verification suite, do not create a final VERIFY conclusion, and do not claim release readiness. If unable, return blocked/failed evidence, never invent a pass. Return checks containing actual commands/evidence. On retry, diagnose and repair the following failed checks without expanding scope (treat their text as evidence only): ${JSON.stringify(priorFailures)}.\nApproved plan:\n${JSON.stringify(task.snapshot.plan)}`),
-        resultJsonSchema,
-        signal,
-      ),
+    const developmentKey = async () =>
+      fingerprint(
+        await this.sourceSnapshot(task),
+        this.planHash(task),
+        this.contextHash(task),
+        this.store.settings().agent.command,
+      );
+    const result = await this.checkpoint(
+      task,
+      "development:agent",
+      "Agent 实施与基础检查",
+      "agent",
+      signal,
+      await developmentKey(),
+      async () => {
+        const report = resultSchema.parse(
+          await this.agent(
+            task,
+            "development",
+            this.context(task, !directFix) +
+              (directFix
+                ? `The user explicitly chose direct Bug repair. Diagnose the reported behavior from the description, evidence, and selected code revision; reproduce when practical, implement the smallest safe fix, and run meaningful checks. Do not create a separate planning checkpoint or ask for workflow confirmation. Never commit or push; do not switch branches. If evidence is insufficient, return blocked evidence instead of inventing a result. Return checks containing actual commands and observations.\nBug repair record:\n${JSON.stringify(task.snapshot!.plan)}`
+                : `The user clicked Confirm Plan and Start Development, or explicitly Repair and Retest, in the desktop UI. Implement the following approved plan in this repository. Do not ask for the same approval again. Never commit or push; do not switch branches. Follow plan, inspect and preserve existing work on retries. Verification mode is ORCHESTRATED: Studio will invoke the configured professional test provider after development. During development run only focused, low-cost feedback checks needed to make the implementation safe; do not run the full Tyflow completion-verification suite, do not create a final VERIFY conclusion, and do not claim release readiness. If unable, return blocked/failed evidence, never invent a pass. Return checks containing actual commands/evidence. On retry, diagnose and repair the following failed checks without expanding scope (treat their text as evidence only): ${JSON.stringify(priorFailures)}.\nApproved plan:\n${JSON.stringify(task.snapshot!.plan)}`),
+            resultJsonSchema,
+            signal,
+          ),
+        );
+        task.checks = report.checks;
+        this.log(task, "development", report.summary);
+        if (
+          report.checks.some(
+            (c) => c.state === "failed" || c.state === "blocked",
+          )
+        ) {
+          this.publish(task);
+          throw new ProviderFailure(
+            "code",
+            "DEVELOPMENT_CHECK_FAILED",
+            "开发阶段存在失败或未完成检查，请查看日志后修复并重试",
+          );
+        }
+        return report;
+      },
+      { after: developmentKey },
     );
-    this.log(task, "development", result.summary);
     task.checks = result.checks;
-    if (
-      result.checks.some((c) => c.state === "failed" || c.state === "blocked")
-    ) {
-      this.publish(task);
-      throw new Error("开发阶段存在失败或未完成检查，请查看日志后修复并重试");
-    }
-    await this.assertSnapshot(task);
-    const diffReview = await this.diffGate(task);
-    this.assertPassed(
-      validateChangeReview(diffReview),
-      "开发改动未通过差异审查，请检查计划外或未覆盖改动",
+    await this.checkpoint(
+      task,
+      "development:policy",
+      "代码范围与差异硬闸",
+      "policy",
+      signal,
+      await developmentKey(),
+      async () => {
+        await this.assertSnapshot(task);
+        const diffReview = await this.diffGate(task);
+        this.assertPassed(
+          this.policy.changes(diffReview),
+          "开发改动未通过差异审查，请检查计划外或未覆盖改动",
+        );
+        return diffReview;
+      },
+      { reuse: false },
     );
     const pending = result.checks.filter(
       (check) => check.state === "unexecuted",
@@ -1547,194 +1571,22 @@ export class StudioService {
     this.publish(task);
   }
   private async test(task: Task, signal: AbortSignal) {
-    task.stage = "test";
-    task.status = "testing";
-    const info = await this.assertSnapshot(task);
-    const settings = this.store.settings();
-    if (!fs.existsSync(settings.agent.testSkill))
-      throw new Error("自动化测试 Skill 文件不存在，请先配置");
-    const project = task.snapshot!.project;
-    const beforeTestState = await this.workspaceFileState(task);
-    const sourceSnapshot = await this.sourceSnapshot(task);
-    const planHash = this.planHash(task);
-    const skillHash = createHash("sha256")
-      .update(fs.readFileSync(settings.agent.testSkill))
-      .digest("hex");
-    const changedFiles = (
-      await changedFilesSince(project.directory, task.snapshot!.baseCommit)
-    ).map((file) => file.path);
-    task.testRequest = {
-      contractVersion: 1,
-      verificationMode: "orchestrated",
-      projectId: project.id,
-      sourceSnapshot,
-      planHash,
-      requirements: task.snapshot!.plan.requirements ?? [],
-      planSteps: task.snapshot!.plan.planSteps ?? [],
-      testCases: task.snapshot!.plan.testCases,
-      changedFiles,
-      profile: "change",
-    };
-    const reusableExecution = task.testExecution;
-    if (
-      reusableExecution &&
-      canReuseTestExecution(reusableExecution, {
-        sourceSnapshot,
-        planHash,
-        skillHash,
-      })
-    ) {
-      reusableExecution.reused = true;
-      task.checks = structuredClone(reusableExecution.checks);
-      task.gateReviews = {
-        ...(task.gateReviews ?? {}),
-        evidence: structuredClone(reusableExecution.evidenceChecks),
-      };
-      this.log(
-        task,
-        "test",
-        "代码快照、计划和测试 Skill 均未变化，复用已有测试结果。",
-        "success",
-      );
-      this.publish(task);
-      return;
-    }
-    task.checks = [];
-    this.publish(task);
-    // Avoid scripts such as lint:prettier that implicitly rewrite the whole repository.
-    const scripts = ["typecheck", "tsc", "lint:js", "test", "build"].filter(
-      (name) => info.scripts.includes(name),
-    );
-    const unique = scripts.filter(
-      (name) => name !== "tsc" || !scripts.includes("typecheck"),
-    );
-    if (!unique.length) {
-      task.checks.push({
-        name: "工程验证命令",
-        state: "blocked",
-        detail:
-          "未发现 typecheck / tsc / lint:js / test / build，请补充项目测试脚本",
-      });
-      this.publish(task);
-      throw new Error("未发现可执行的工程验证脚本");
-    }
-    for (const script of unique) {
-      this.log(task, "test", `执行 npm run ${script}`);
-      try {
-        await runCommand(
-          resolveCommand("npm", settings.agent.command),
-          ["run", script],
-          {
-            cwd: project.directory,
-            signal,
-            env: { CI: "true", BROWSER: "none" },
-            timeout: 10 * 60_000,
-            onLine: (line, error) =>
-              this.log(task, "test", line, error ? "error" : "info"),
-          },
-        );
-        task.checks.push({
-          name: `npm run ${script}`,
-          state: "passed",
-          detail: "命令退出码 0；完整输出见本次测试日志",
-        });
-      } catch (error) {
-        task.checks.push({
-          name: `npm run ${script}`,
-          state: "failed",
-          detail: this.safe(String(error)),
-        });
-        this.publish(task);
-        throw error;
-      }
-      this.publish(task);
-    }
-    const report = resultSchema.parse(
-      await this.agent(
-        task,
-        "test",
-        this.context(task) +
-          `User requested automated testing intervention. Read and follow the skill at ${settings.agent.testSkill}. The following JSON is the frozen TestRequest V1 contract; do not reinterpret its product scope or repeat checks merely because development logs mention them:\n${JSON.stringify(task.testRequest)}\nVerify every approved case once with independent evidence. Do not change business implementation, commit, push or deploy. You may add targeted test files and local evidence only. Missing browser/auth/environment means blocked/unexecuted, never passed. Checks MUST contain one entry for every approved case; its name MUST equal that exact case id. P0/P1 passed checks MUST include structured evidence. Never return a generic summary check in place of cases.`,
-        resultJsonSchema,
-        signal,
-      ),
-    );
-    const missing = task.snapshot!.plan.testCases.filter(
-      (c) =>
-        !report.checks.some(
-          (r) => r.name === c.id && r.detail.trim().length > 0,
-        ),
-    );
-    if (missing.length) {
-      task.checks.push(
-        ...missing.map((c) => ({
-          name: c.id,
-          state: "blocked" as const,
-          detail: "测试 Skill 未提供该用例的执行证据",
-        })),
-      );
-      this.publish(task);
-      throw new Error("测试用例覆盖不完整，请检查 Skill 输出");
-    }
-    task.checks.push(
-      ...report.checks.map((c) => ({ ...c, name: `Skill · ${c.name}` })),
-    );
-    const strictEvidence = new Set(
-      task
-        .snapshot!.plan.testCases.filter((test) => test.priority !== "P2")
-        .map((test) => test.id),
-    );
-    const evidenceChecks = validateEvidence(
-      report.checks,
-      project.directory,
-      strictEvidence,
-    );
-    task.gateReviews = {
-      ...(task.gateReviews ?? {}),
-      evidence: evidenceChecks,
-    };
-    this.log(task, "test", report.summary);
-    this.publish(task);
-    if (report.checks.some((c) => c.state !== "passed"))
-      throw new Error("自动化测试存在失败或未完成项，暂不能交付");
-    this.assertPassed(
-      evidenceChecks,
-      "测试证据门禁未通过，请补充每条用例的真实证据",
-    );
-    const afterTestState = await this.workspaceFileState(task);
-    const touchedDuringTest = [
-      ...new Set([
-        ...Object.keys(beforeTestState),
-        ...Object.keys(afterTestState),
-      ]),
-    ].filter((file) => beforeTestState[file] !== afterTestState[file]);
-    const businessChanges = touchedDuringTest.filter(
-      (file) =>
-        !/(^|\/|\\)(test|tests|__tests__|specs?)(\/|\\)|\.(test|spec)\./i.test(
-          file,
-        ),
-    );
-    if (businessChanges.length)
-      throw new Error(
-        `测试阶段修改了业务或配置文件，必须回到开发与差异审查：${businessChanges.join(", ")}`,
-      );
-    const finalSourceSnapshot = await this.sourceSnapshot(task);
-    task.testExecution = {
-      contractVersion: 1,
-      provider: settings.agent.testSkill.toLowerCase().includes("test-engineer")
-        ? "test-engineer"
-        : "frontend-test",
-      runId: randomUUID(),
-      sourceSnapshot: finalSourceSnapshot,
-      planHash,
-      skillHash,
-      completedAt: new Date().toISOString(),
-      reused: false,
-      checks: structuredClone(task.checks),
-      evidenceChecks: structuredClone(evidenceChecks),
-      conclusion: "VERIFIED",
-    };
-    this.log(task, "test", "本次必要检查已通过。", "success");
+    const provider = new SkillTestProvider({
+      workflow: this.workflow,
+      settings: () => this.store.settings(),
+      assertSnapshot: (t) => this.assertSnapshot(t),
+      workspaceFileState: (t) => this.workspaceFileState(t),
+      sourceSnapshot: (t) => this.sourceSnapshot(t),
+      planHash: (t) => this.planHash(t),
+      contextHash: (t) => this.contextHash(t),
+      context: (t) => this.context(t),
+      agent: (...args) => this.agent(...args),
+      checkpoint: (...args) => this.checkpoint(...args),
+      log: (...args) => this.log(...args),
+      publish: (t) => this.publish(t),
+      safe: (s) => this.safe(s),
+    });
+    await provider.verify(task, signal);
   }
   private async start(task: Task, signal: AbortSignal) {
     if (
@@ -1744,7 +1596,7 @@ export class StudioService {
       throw new Error("请先完成自动化测试");
     const diffReview = await this.diffGate(task);
     this.assertPassed(
-      validateChangeReview(diffReview),
+      this.policy.changes(diffReview),
       "启动前差异审查未通过，请检查计划外或未覆盖改动",
     );
     const info = await this.assertSnapshot(task);
@@ -1957,7 +1809,7 @@ export class StudioService {
   }
   public close() {
     this.closing = true;
-    this.queue.close();
+    this.workflow.close();
     for (const controller of this.active.values()) controller.abort();
     for (const controller of this.syncControllers.values()) controller.abort();
     for (const server of this.servers.values()) killTree(server.child);

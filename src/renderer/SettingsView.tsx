@@ -145,6 +145,7 @@ export default function SettingsView({
   async function save() {
     if (!window.studio) return;
     setBusy("save");
+    setConnection(undefined);
     try {
       const result = await window.studio.saveSettings(draft);
       setDraft(structuredClone(result));
@@ -193,7 +194,7 @@ export default function SettingsView({
       setBusy("");
     }
   }
-  async function test(target: "git" | "zentao" | "agent") {
+  async function test(target: "git" | "zentao" | "agent" | "wecom") {
     if (!window.studio) return;
     setBusy(target);
     setConnection(undefined);
@@ -856,6 +857,7 @@ export default function SettingsView({
                         setDraft({
                           ...draft,
                           execution: {
+                            ...draft.execution,
                             concurrency: Number(event.target.value),
                             previewMode:
                               draft.execution?.previewMode ?? "single",
@@ -877,6 +879,7 @@ export default function SettingsView({
                         setDraft({
                           ...draft,
                           execution: {
+                            ...draft.execution,
                             concurrency: draft.execution?.concurrency ?? 2,
                             previewMode: event.target.value as
                               "single" | "multiple",
@@ -903,6 +906,66 @@ export default function SettingsView({
                   {I18nT(
                     "开发任务可以并行，超过上限自动排队。默认只在点击验证时启动项目，复用一个验证窗口。",
                     "Development runs in parallel; excess tasks queue. By default, projects start only when requested and share one verification window.",
+                  )}
+                </p>
+                <div className="form-row">
+                  <Field
+                    label={I18nT(
+                      "Agent 无输出超时（分钟）",
+                      "Agent idle timeout (minutes)",
+                    )}
+                  >
+                    <input
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={
+                        (draft.execution?.agentIdleTimeoutMs ?? 180000) / 60000
+                      }
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          execution: {
+                            concurrency: 2,
+                            previewMode: "single",
+                            ...draft.execution,
+                            agentIdleTimeoutMs: Number(e.target.value) * 60000,
+                          },
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label={I18nT(
+                      "Agent 单次执行上限（分钟）",
+                      "Agent execution limit (minutes)",
+                    )}
+                  >
+                    <input
+                      type="number"
+                      min={1}
+                      max={60}
+                      value={
+                        (draft.execution?.agentTimeoutMs ?? 1800000) / 60000
+                      }
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          execution: {
+                            concurrency: 2,
+                            previewMode: "single",
+                            ...draft.execution,
+                            agentTimeoutMs: Number(e.target.value) * 60000,
+                          },
+                        })
+                      }
+                    />
+                  </Field>
+                </div>
+                <p>
+                  {I18nT(
+                    "超时会停止当前 Agent 并保留已有代码，由你确认后重试；不会自动提交或推送。",
+                    "Timeout stops the Agent and preserves code. Retry requires your confirmation; no automatic commit or push.",
                   )}
                 </p>
                 <Field label={I18nT("体检项目", "Project for setup checks")}>
@@ -1195,7 +1258,7 @@ export default function SettingsView({
                   })
                 }
               />
-              {I18nT("Windows 桌面通知", "Windows desktop notifications")}
+              {I18nT("桌面通知", "Desktop notifications")}
             </label>
             <div className="environment-grid">
               {(
@@ -1207,24 +1270,31 @@ export default function SettingsView({
                   [
                     "developmentComplete",
                     I18nT(
-                      "开发完成，等待自动化测试",
-                      "Development complete; awaiting tests",
+                      "开发完成，等待测试或人工验证",
+                      "Development complete; awaiting tests or manual verification",
                     ),
                   ],
                   [
                     "acceptanceReady",
                     I18nT(
-                      "开发与测试完成，等待验收",
-                      "Development and testing complete; awaiting acceptance",
+                      "必要检查完成，等待验收",
+                      "Required checks complete; awaiting acceptance",
                     ),
                   ],
                   ["failed", I18nT("任务执行失败", "Task execution failed")],
+                  [
+                    "deliveryComplete",
+                    I18nT(
+                      "代码成功推送（不代表合并或上线）",
+                      "Code pushed (not merged or deployed)",
+                    ),
+                  ],
                 ] as const
               ).map(([key, label]) => (
                 <label className="checkbox" key={key}>
                   <input
                     type="checkbox"
-                    checked={draft.notifications.milestones[key]}
+                    checked={draft.notifications.milestones[key] ?? true}
                     onChange={(event) =>
                       setDraft({
                         ...draft,
@@ -1244,10 +1314,96 @@ export default function SettingsView({
             </div>
             <Notice>
               {I18nT(
-                "当前支持本机桌面通知；这里保留统一通知配置，后续可继续接入企业微信、钉钉或 Teams。",
-                "Desktop notifications are supported now. This unified notification configuration can later add WeCom, DingTalk, or Teams.",
+                "通知失败不会中断任务。企业微信只发送任务摘要，不发送需求正文、代码、截图或错误日志。同一节点不会自动重复发送。",
+                "Notification failures do not stop tasks. WeCom sends summaries only, without requirements, code, screenshots, or error logs. Milestones are not automatically resent.",
               )}
             </Notice>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={draft.notifications.wecom?.enabled ?? false}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    notifications: {
+                      ...draft.notifications,
+                      wecom: {
+                        ...draft.notifications.wecom,
+                        enabled: event.target.checked,
+                      },
+                    },
+                  })
+                }
+              />
+              {I18nT("企业微信测试群通知", "WeCom test-group notifications")}
+            </label>
+            <Field
+              label={I18nT(
+                "群机器人 Webhook（本地加密保存）",
+                "Group robot Webhook (encrypted locally)",
+              )}
+            >
+              <div className="input-action">
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  aria-label="WeCom Webhook"
+                  value={draft.secrets?.wecom ?? ""}
+                  placeholder={
+                    draft.notifications.wecom?.hasSecret
+                      ? "••••••••"
+                      : "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…"
+                  }
+                  onChange={(event) => {
+                    if (event.target.value) secret("wecom", event.target.value);
+                    else
+                      setDraft((previous) => {
+                        const secrets = { ...previous.secrets };
+                        delete secrets.wecom;
+                        return {
+                          ...previous,
+                          secrets: Object.keys(secrets).length
+                            ? secrets
+                            : undefined,
+                        };
+                      });
+                  }}
+                />
+                <button type="button" onClick={() => secret("wecom", "")}>
+                  {I18nT("清除", "Clear")}
+                </button>
+              </div>
+              <small>
+                {I18nT(
+                  "留空保留现有凭据；点击清除并保存才会删除。请先保存配置，再主动发送测试通知。",
+                  "Leave blank to keep the saved credential; Clear and Save deletes it. Save before sending a test notification.",
+                )}
+              </small>
+            </Field>
+            <button
+              type="button"
+              disabled={
+                !native ||
+                Boolean(busy) ||
+                dirty ||
+                !settings.notifications.wecom?.enabled ||
+                !settings.notifications.wecom?.hasSecret
+              }
+              onClick={() => test("wecom")}
+            >
+              {busy === "wecom" ? (
+                <Loader2 className="spin" size={15} />
+              ) : (
+                <BellRing size={15} />
+              )}
+              {I18nT("发送测试通知", "Send test notification")}
+            </button>
+            <small>
+              {I18nT(
+                "此按钮会向已保存的群发送一条测试消息，请确认是内部测试群。Webhook 不要发到聊天或提交到 Git。",
+                "This sends one message to the saved group. Use an internal test group; never share the Webhook in chat or Git.",
+              )}
+            </small>
           </fieldset>
         </section>
       )}

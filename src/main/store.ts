@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { recoverInterruptedTask } from "./workflow/recovery";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -37,11 +38,13 @@ export function initialSettings(resourcesPath?: string): Settings {
     notifications: {
       enabled: true,
       desktop: true,
+      wecom: { enabled: false },
       milestones: {
         planReady: true,
         developmentComplete: true,
         acceptanceReady: true,
         failed: true,
+        deliveryComplete: true,
       },
     },
     theme: "#1677FF",
@@ -111,7 +114,8 @@ export class Store {
         }
       }
     }
-    for (const task of this.state.tasks)
+    for (const task of this.state.tasks) {
+      if (recoverInterruptedTask(task)) changed = true;
       if (
         ["queued", "analyzing", "developing", "testing", "starting"].includes(
           task.status,
@@ -122,6 +126,7 @@ export class Store {
         task.error = "客户端关闭导致任务中断，请查看日志后重试。";
         changed = true;
       }
+    }
     if (changed) this.flush();
   }
   private flush() {

@@ -36,5 +36,11 @@ const api: StudioAPI = {
     ipcRenderer.on("studio:task", listener);
     return () => ipcRenderer.removeListener("studio:task", listener);
   },
+  onNotification: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, message: string) =>
+      callback(message);
+    ipcRenderer.on("studio:notification", listener);
+    return () => ipcRenderer.removeListener("studio:notification", listener);
+  },
 };
 contextBridge.exposeInMainWorld("studio", api);

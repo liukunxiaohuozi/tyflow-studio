@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from "node:child_process";
+import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -146,11 +146,18 @@ export function resolveCommand(
 export function killTree(child: ChildProcess) {
   if (!child.pid) return;
   if (process.platform === "win32") {
-    const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-      windowsHide: true,
-      stdio: "ignore",
-    });
-    killer.on("error", () => child.kill());
+    // Finish tree termination before Electron exits; an asynchronous taskkill
+    // can itself be terminated with the app, leaving npm's Node descendants alive.
+    const killer = spawnSync(
+      "taskkill",
+      ["/pid", String(child.pid), "/T", "/F"],
+      {
+        windowsHide: true,
+        stdio: "ignore",
+        timeout: 5000,
+      },
+    );
+    if (killer.error) child.kill();
   } else {
     const group = child.pid;
     try {
@@ -172,16 +179,39 @@ export interface RunOptions {
   signal?: AbortSignal;
   input?: string;
   timeout?: number;
+  idleTimeout?: number;
+  idleWarningAfter?: number;
+  onActivity?: (at: string) => void;
+  onIdle?: (elapsedMs: number) => void;
   env?: NodeJS.ProcessEnv;
   onLine?: (line: string, error: boolean) => void;
   onChild?: (child: ChildProcess) => void;
+}
+export class ProcessExecutionError extends Error {
+  constructor(
+    public reason:
+      | "START_FAILED"
+      | "IDLE_TIMEOUT"
+      | "TOTAL_TIMEOUT"
+      | "NETWORK_LOST"
+      | "ABNORMAL_EXIT"
+      | "CANCELLED",
+    message: string,
+    public exitCode: number | null = null,
+    public lastOutputAt = new Date().toISOString(),
+    public durationMs = 0,
+  ) {
+    super(message);
+    this.name = "ProcessExecutionError";
+  }
 }
 export async function runCommand(
   command: Command,
   args: string[],
   options: RunOptions,
 ): Promise<string> {
-  if (options.signal?.aborted) throw new Error("任务已停止");
+  if (options.signal?.aborted)
+    throw new ProcessExecutionError("CANCELLED", "任务已停止");
   return new Promise((resolve, reject) => {
     const child = spawn(command.executable, [...command.args, ...args], {
       cwd: options.cwd,
@@ -195,12 +225,19 @@ export async function runCommand(
     let stdout = "";
     let stderr = "";
     let settled = false;
-    let timedOut = false;
+    const startedAt = Date.now();
+    let lastActivity = startedAt;
+    let timeoutReason: "IDLE_TIMEOUT" | "TOTAL_TIMEOUT" | undefined;
+    let idleTimer: NodeJS.Timeout | undefined;
+    let warningTimer: NodeJS.Timeout | undefined;
     let terminationTimer: NodeJS.Timeout | undefined;
     const buffers = ["", ""];
     const decoders = [new StringDecoder("utf8"), new StringDecoder("utf8")];
     const consume = (chunk: Buffer, index: number) => {
       if (settled) return;
+      lastActivity = Date.now();
+      options.onActivity?.(new Date(lastActivity).toISOString());
+      resetIdle();
       const value = decoders[index].write(chunk);
       if (index === 0) stdout = (stdout + value).slice(-2_000_000);
       else stderr = (stderr + value).slice(-20_000);
@@ -218,21 +255,60 @@ export async function runCommand(
     child.stderr.on("data", (b) => consume(b, 1));
     const terminate = () => {
       killTree(child);
-      terminationTimer ??= setTimeout(
-        () => finish(new Error(timedOut ? "命令执行超时" : "任务已停止")),
-        5000,
-      );
+      terminationTimer ??= setTimeout(() => finish(processError()), 5000);
     };
     const abort = () => terminate();
+    const processError = (code: number | null = null) => {
+      const reason = options.signal?.aborted
+        ? "CANCELLED"
+        : (timeoutReason ??
+          (/ECONNRESET|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|socket hang up|connection (?:reset|closed)/i.test(
+            stderr + stdout,
+          )
+            ? "NETWORK_LOST"
+            : "ABNORMAL_EXIT"));
+      const message =
+        reason === "CANCELLED"
+          ? "任务已停止"
+          : reason === "IDLE_TIMEOUT"
+            ? "命令长时间无输出，已暂停执行并保留当前代码；可检查日志后重试"
+            : reason === "TOTAL_TIMEOUT"
+              ? "命令执行超时"
+              : `命令退出码 ${code}: ${stderr.slice(-1500)}`;
+      return new ProcessExecutionError(
+        reason,
+        message,
+        code,
+        new Date(lastActivity).toISOString(),
+        Date.now() - startedAt,
+      );
+    };
+    const resetIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (warningTimer) clearTimeout(warningTimer);
+      if (options.idleTimeout)
+        idleTimer = setTimeout(() => {
+          timeoutReason ??= "IDLE_TIMEOUT";
+          terminate();
+        }, options.idleTimeout);
+      if (options.idleWarningAfter && options.onIdle)
+        warningTimer = setTimeout(
+          () => options.onIdle?.(Date.now() - lastActivity),
+          options.idleWarningAfter,
+        );
+    };
+    resetIdle();
     options.signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(() => {
-      timedOut = true;
+      timeoutReason ??= "TOTAL_TIMEOUT";
       terminate();
     }, options.timeout ?? 600_000);
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
+      if (warningTimer) clearTimeout(warningTimer);
       if (terminationTimer) clearTimeout(terminationTimer);
       options.signal?.removeEventListener("abort", abort);
       buffers.forEach((s, i) => {
@@ -244,15 +320,25 @@ export async function runCommand(
       if (error) reject(error);
       else resolve(stdout);
     };
-    child.on("error", (e) => finish(e));
+    child.on("error", (e) =>
+      finish(
+        new ProcessExecutionError(
+          "START_FAILED",
+          e.message,
+          null,
+          new Date(lastActivity).toISOString(),
+          Date.now() - startedAt,
+        ),
+      ),
+    );
     child.on("close", (code) =>
       finish(
         options.signal?.aborted
-          ? new Error("任务已停止")
-          : timedOut
-            ? new Error("命令执行超时")
+          ? processError(code)
+          : timeoutReason
+            ? processError(code)
             : code !== 0
-              ? new Error(`命令退出码 ${code}: ${stderr.slice(-1500)}`)
+              ? processError(code)
               : undefined,
       ),
     );

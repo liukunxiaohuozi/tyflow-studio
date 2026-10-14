@@ -109,6 +109,10 @@ export default function App() {
     (message: string, error = false) => setToast({ message, error }),
     [],
   );
+  useEffect(
+    () => window.studio?.onNotification?.((message) => report(message, true)),
+    [report],
+  );
   const updateTask = useCallback(
     (task: Task) =>
       setData((prev) =>
@@ -224,6 +228,7 @@ export default function App() {
     (current.snapshot ||
       [
         "queued",
+        "analyzing",
         "developing",
         "waiting-test",
         "waiting-review",
@@ -231,7 +236,9 @@ export default function App() {
         "starting",
         "review",
         "accepted",
-      ].includes(current.status));
+      ].includes(current.status) ||
+      (["failed", "stopped"].includes(current.status) &&
+        Boolean(current.failure || current.checkpoints?.length)));
   return (
     <div className="app-shell">
       <aside className="sidebar">

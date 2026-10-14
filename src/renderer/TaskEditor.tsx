@@ -30,6 +30,8 @@ import { activeStatuses, Field, Notice, Modal, PlanDialog } from "./components";
 import { I18nT } from "./i18n";
 import AttachmentImages from "./AttachmentImages";
 import BranchSelection from "./BranchSelection";
+import RecoveryPanel from "./RecoveryPanel";
+import SupplementDialog from "./SupplementDialog";
 interface Props {
   api?: StudioAPI;
   simulated?: boolean;
@@ -112,6 +114,7 @@ export default function TaskEditor({
   const [zentaoBusy, setZentaoBusy] = useState(false);
   const [repoRevision, setRepoRevision] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [supplementOpen, setSupplementOpen] = useState(false);
   const [drag, setDrag] = useState(false);
   const [edited, setEdited] = useState(false);
   const [dialog, setDialog] = useState<"plan" | "tests">();
@@ -534,6 +537,24 @@ export default function TaskEditor({
         </Notice>
       )}
       {task?.error && <Notice tone="error">{task.error}</Notice>}
+      {task && <RecoveryPanel task={task} />}
+      {task?.status === "ready" && api && (
+        <button
+          disabled={busy || edited}
+          onClick={() => setSupplementOpen(true)}
+        >
+          {I18nT("追加信息并重新评估", "Add context and reassess")}
+        </button>
+      )}
+      {task && api && supplementOpen && (
+        <SupplementDialog
+          api={api}
+          task={task}
+          onTask={onTask}
+          report={report}
+          close={() => setSupplementOpen(false)}
+        />
+      )}
       {!confirm && repoError && (
         <Notice tone="error">
           {repoError}{" "}

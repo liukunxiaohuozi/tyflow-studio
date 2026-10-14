@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import {
   executablePath,
   findCommands,
   resolveCommand,
   runCommand,
+  ProcessExecutionError,
+  killTree,
 } from "../src/main/process";
 
 jest.setTimeout(15000);
@@ -64,6 +66,50 @@ test("timeout terminates a running process and reports the timeout", async () =>
       timeout: 700,
     }),
   ).rejects.toThrow(/超时/);
+});
+
+test("idle watchdog warns and terminates silent commands with a recoverable reason", async () => {
+  const warnings: number[] = [];
+  await expect(
+    runCommand(script("setInterval(()=>{},1000)"), [], {
+      cwd: root,
+      idleWarningAfter: 200,
+      idleTimeout: 700,
+      onIdle: (ms) => warnings.push(ms),
+    }),
+  ).rejects.toMatchObject({ reason: "IDLE_TIMEOUT" });
+  expect(warnings.length).toBeGreaterThan(0);
+});
+
+test("partial stdout chunks reset idle timeout even without line breaks", async () => {
+  const activity: string[] = [];
+  const output = await runCommand(
+    script(
+      "const timer=setInterval(()=>process.stdout.write('.'),100);setTimeout(()=>{clearInterval(timer)},1100)",
+    ),
+    [],
+    {
+      cwd: root,
+      idleTimeout: 500,
+      onActivity: (at) => activity.push(at),
+    },
+  );
+  expect(output.length).toBeGreaterThan(5);
+  expect(activity.length).toBeGreaterThan(5);
+});
+
+test("connection loss is classified separately from abnormal exit", async () => {
+  try {
+    await runCommand(
+      script("console.error('ECONNRESET socket hang up');process.exitCode=7"),
+      [],
+      { cwd: root },
+    );
+    throw new Error("Expected failure");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ProcessExecutionError);
+    expect(error).toMatchObject({ reason: "NETWORK_LOST", exitCode: 7 });
+  }
 });
 
 test("abort after output stops the subprocess and reports cancellation", async () => {
@@ -137,34 +183,85 @@ test("macOS child PATH includes the configured Agent's Node bin and common GUI-m
   expect(value.filter((entry) => entry === nodeBin)).toHaveLength(1);
 });
 
-(process.platform === "win32" ? test : test.skip)("Windows CLI discovery skips extensionless Unix shims and preserves PATH priority", () => {
-  const second = path.join(root, "second");
-  fs.mkdirSync(second);
-  fs.writeFileSync(path.join(root, "codex"), "#!/bin/sh");
-  fs.writeFileSync(path.join(root, "codex.cmd"), "@echo off");
-  fs.writeFileSync(path.join(second, "codex.exe"), "fixture");
-  const previous = process.env.PATH;
-  process.env.PATH = [root, second, root].join(path.delimiter);
-  try {
-    expect(findCommands("codex")).toEqual([path.join(root, "codex.cmd"), path.join(second, "codex.exe")]);
-  } finally {
-    if (previous === undefined) delete process.env.PATH;
-    else process.env.PATH = previous;
-  }
-});
+(process.platform === "win32" ? test : test.skip)(
+  "Windows shutdown finishes killing the owned Node descendants before returning",
+  async () => {
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "const {spawn}=require('node:child_process');const nested=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});console.log(nested.pid);setInterval(()=>{},1000);",
+      ],
+      { cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    try {
+      const descendant = await new Promise<number>((resolve, reject) => {
+        child.once("error", reject);
+        child.stdout!.once("data", (value) =>
+          resolve(Number(value.toString().trim())),
+        );
+      });
+      expect(descendant).toBeGreaterThan(0);
+      killTree(child);
+      expect(() => process.kill(descendant, 0)).toThrow();
+    } finally {
+      killTree(child);
+    }
+  },
+);
 
-(process.platform === "win32" ? test.skip : test)("POSIX cancellation escalates an ignored SIGTERM to SIGKILL within a bounded time", async () => {
-  const controller = new AbortController();
-  let child: ChildProcess | undefined;
-  let abortedAt = 0;
-  await expect(runCommand(script("process.on('SIGTERM',()=>{});console.log('signal-handler-ready');setInterval(()=>{},1000);"), [], {
-    cwd: root,
-    signal: controller.signal,
-    onChild: spawned => { child = spawned; },
-    onLine: line => { if (line === "signal-handler-ready") { abortedAt = Date.now(); controller.abort(); } },
-    timeout: 10000,
-  })).rejects.toThrow(/已停止/);
-  expect(abortedAt).toBeGreaterThan(0);
-  expect(Date.now() - abortedAt).toBeLessThan(6000);
-  expect(child?.signalCode).toBe("SIGKILL");
-});
+(process.platform === "win32" ? test : test.skip)(
+  "Windows CLI discovery skips extensionless Unix shims and preserves PATH priority",
+  () => {
+    const second = path.join(root, "second");
+    fs.mkdirSync(second);
+    fs.writeFileSync(path.join(root, "codex"), "#!/bin/sh");
+    fs.writeFileSync(path.join(root, "codex.cmd"), "@echo off");
+    fs.writeFileSync(path.join(second, "codex.exe"), "fixture");
+    const previous = process.env.PATH;
+    process.env.PATH = [root, second, root].join(path.delimiter);
+    try {
+      expect(findCommands("codex")).toEqual([
+        path.join(root, "codex.cmd"),
+        path.join(second, "codex.exe"),
+      ]);
+    } finally {
+      if (previous === undefined) delete process.env.PATH;
+      else process.env.PATH = previous;
+    }
+  },
+);
+
+(process.platform === "win32" ? test.skip : test)(
+  "POSIX cancellation escalates an ignored SIGTERM to SIGKILL within a bounded time",
+  async () => {
+    const controller = new AbortController();
+    let child: ChildProcess | undefined;
+    let abortedAt = 0;
+    await expect(
+      runCommand(
+        script(
+          "process.on('SIGTERM',()=>{});console.log('signal-handler-ready');setInterval(()=>{},1000);",
+        ),
+        [],
+        {
+          cwd: root,
+          signal: controller.signal,
+          onChild: (spawned) => {
+            child = spawned;
+          },
+          onLine: (line) => {
+            if (line === "signal-handler-ready") {
+              abortedAt = Date.now();
+              controller.abort();
+            }
+          },
+          timeout: 10000,
+        },
+      ),
+    ).rejects.toThrow(/已停止/);
+    expect(abortedAt).toBeGreaterThan(0);
+    expect(Date.now() - abortedAt).toBeLessThan(6000);
+    expect(child?.signalCode).toBe("SIGKILL");
+  },
+);
