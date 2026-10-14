@@ -30,6 +30,9 @@ import {
   syncRepository,
 } from "./git";
 import { executablePath } from "./process";
+import { TaskQueue } from "./task-queue";
+import { prepareWorkspace, installWorkspaceDependencies } from "./workspaces";
+import { availablePort } from "./preview";
 import {
   canAct,
   canReuseTestExecution,
@@ -236,21 +239,35 @@ const resultSchema = z.object({
 });
 export class StudioService {
   private synchronizations = new Map<string, Promise<RepositoryInfo>>();
+  private syncControllers = new Map<string, AbortController>();
   readonly assets: AssetManager;
-  private active?: { id: string; controller: AbortController };
-  private sealed = new Set<string>();
+  private active = new Map<string, AbortController>();
+  private queue: TaskQueue;
+  private delivering = new Set<string>();
+  private closing = false;
+  private agents = new Map<string, Awaited<ReturnType<typeof resolveCodex>>>();
+  private sealed = new Map<string, { error?: string; message: string }>();
   private servers = new Map<
     string,
     { child: ChildProcess; directory: string; url: string }
   >();
-  private lastLogFlush = 0;
+  private lastLogFlush = new Map<string, number>();
   constructor(
     readonly store: Store,
     private vault: Credentials,
     private changed: (task: Task) => void,
-    private openUrl: (url: string) => Promise<void>,
+    private openUrl: (
+      url: string,
+      context?: { title: string; branch: string; external?: boolean },
+    ) => Promise<void>,
   ) {
     this.assets = new AssetManager(path.join(store.directory, "assets"));
+    this.queue = new TaskQueue(
+      () => this.store.settings().execution?.concurrency ?? 2,
+    );
+  }
+  public get busy() {
+    return this.queue.busy || this.delivering.size > 0;
   }
   private safe(s: string) {
     let secrets: string[] = [];
@@ -275,6 +292,8 @@ export class StudioService {
     for (const p of settings.projects)
       p.hasSecret = this.vault.has("git:" + p.id);
     settings.zentao.hasSecret = this.vault.has("zentao");
+    if (settings.updates)
+      settings.updates.hasSecret = this.vault.has("updates");
     return settings;
   }
   public bootstrap(): Bootstrap {
@@ -304,13 +323,15 @@ export class StudioService {
     };
   }
   public saveSettings(raw: SettingsInput): Settings {
-    if (this.active) throw new Error("任务执行中，请完成或停止任务后修改配置");
+    if (this.busy)
+      throw new Error("任务执行或排队中，请完成或停止任务后修改配置");
     if (this.synchronizations.size)
       throw new Error("远程同步中，请完成后再修改配置");
     const previousSettings = this.store.settings();
     const { secrets, ...settings } = validateSettings(raw);
     const validKeys = new Set([
       "zentao",
+      "updates",
       ...settings.projects.map((p) => "git:" + p.id),
     ]);
     if (secrets) {
@@ -320,6 +341,7 @@ export class StudioService {
     }
     for (const p of settings.projects) delete p.hasSecret;
     delete settings.zentao.hasSecret;
+    if (settings.updates) delete settings.updates.hasSecret;
     this.store.saveSettings(settings);
     for (const task of this.store.tasks()) {
       if (task.snapshot) continue;
@@ -376,12 +398,28 @@ export class StudioService {
     const resolved = path.resolve(project.directory);
     const key =
       process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    const wait = (promise: Promise<RepositoryInfo>) =>
+      !signal
+        ? promise
+        : new Promise<RepositoryInfo>((resolve, reject) => {
+            const abort = () => reject(new Error("任务已停止"));
+            if (signal.aborted) {
+              abort();
+              return;
+            }
+            signal.addEventListener("abort", abort, { once: true });
+            promise
+              .then(resolve, reject)
+              .finally(() => signal.removeEventListener("abort", abort));
+          });
     const existing = this.synchronizations.get(key);
-    if (existing) return existing;
+    if (existing) return wait(existing);
+    const syncController = new AbortController();
+    this.syncControllers.set(key, syncController);
     const work = syncRepository(
       project,
       this.vault.get("git:" + project.id),
-      signal,
+      syncController.signal,
     )
       .then((info) => {
         if (info.syncedAt && info.syncRemote) {
@@ -399,14 +437,28 @@ export class StudioService {
         }
         return info;
       })
-      .finally(() => this.synchronizations.delete(key));
+      .finally(() => {
+        this.synchronizations.delete(key);
+        this.syncControllers.delete(key);
+      });
     this.synchronizations.set(key, work);
-    return work;
+    return wait(work);
   }
   public async repository(id: string, sync = false): Promise<RepositoryInfo> {
     const project = this.project(id);
-    if (sync && this.active)
-      throw new Error("任务执行中，请完成或停止后再同步远程");
+    if (
+      sync &&
+      this.store
+        .tasks()
+        .some(
+          (task) =>
+            task.projectId === id &&
+            !task.workspace &&
+            task.workspaceMode !== "isolated" &&
+            this.queue.has(task.id),
+        )
+    )
+      throw new Error("此项目原工作区正在执行，请稍后同步远程");
     let syncError: string | undefined;
     if (sync) {
       try {
@@ -505,7 +557,8 @@ export class StudioService {
     await this.openUrl(target.href);
   }
   public saveTask(input: TaskInput, id?: string) {
-    if (id && this.active?.id === id) throw new Error("正在执行的任务无法修改");
+    if (id && this.queue.has(id))
+      throw new Error("正在执行或排队的任务无法修改");
     const normalized: TaskInput = {
       ...input,
       branch: { ...input.branch, version: "" },
@@ -546,9 +599,9 @@ export class StudioService {
       message: this.safe(message).slice(0, 12000),
     });
     task.logs = task.logs.slice(-2000);
-    if (Date.now() - this.lastLogFlush > 150) {
+    if (Date.now() - (this.lastLogFlush.get(task.id) ?? 0) > 150) {
       this.publish(task);
-      this.lastLogFlush = Date.now();
+      this.lastLogFlush.set(task.id, Date.now());
     }
   }
   public async action(
@@ -560,6 +613,7 @@ export class StudioService {
       supplement?: { text?: string; assetIds?: string[] };
     },
   ): Promise<Task> {
+    if (this.closing) throw new Error("客户端正在关闭");
     const task = this.store.getTask(id);
     canAct(task, action);
     if (action === "analyze" && options?.planFeedback?.trim()) {
@@ -571,17 +625,22 @@ export class StudioService {
       task.planFeedback = undefined;
     }
     if (action === "stop") {
-      if (this.active?.id !== id) throw new Error("当前任务没有活动进程");
-      this.active.controller.abort();
+      if (!this.queue.has(id)) throw new Error("当前任务没有活动进程");
+      this.queue.cancelWaiting(id);
+      this.active.get(id)?.abort();
+      task.queued = undefined;
       task.status = "stopped";
       task.error = "已停止。重试会保留已有代码和日志。";
       return this.publish(task);
     }
     if (action === "pause") {
-      if (this.active?.id !== id || task.stage !== "development")
+      if (!this.active.has(id) || task.stage !== "development")
         throw new Error("当前 Bug 没有正在执行的修复进程");
-      this.sealed.add(id);
-      this.active.controller.abort();
+      this.sealed.set(id, {
+        message:
+          "用户已暂停 Bug 修复，当前代码、执行快照与日志均已保留，等待补充信息后继续。",
+      });
+      this.active.get(id)!.abort();
       task.status = "stopped";
       task.error = undefined;
       this.log(
@@ -592,103 +651,129 @@ export class StudioService {
       return this.publish(task);
     }
     if (action === "terminate") {
-      if (this.active?.id === id) {
-        this.active.controller.abort();
-        this.active = undefined;
+      this.queue.cancelWaiting(id);
+      this.active.get(id)?.abort();
+      task.queued = undefined;
+      const server = this.servers.get(id);
+      if (server) {
+        killTree(server.child);
+        this.servers.delete(id);
       }
-      this.sealed.add(id);
+      if (this.active.has(id))
+        this.sealed.set(id, { error: "任务已终止。", message: "任务已终止。" });
       task.status = "stopped";
       task.error = "任务已终止。";
       this.log(task, task.stage ?? "analysis", "任务已终止。", "info");
       return this.publish(task);
     }
     if (action === "accept") {
-      const settings = this.store.settings();
-      const snapshot = task.snapshot;
-      if (!snapshot) throw new Error("执行快照缺失");
-      const configured = settings.projects.find(
-        (project) => project.id === snapshot.project.id,
-      );
-      const project = {
-        ...snapshot.project,
-        repository: configured?.repository ?? snapshot.project.repository,
-        auth: configured?.auth ?? snapshot.project.auth,
-        username: configured?.username ?? snapshot.project.username,
-      };
-      const branch =
-        snapshot.branch.mode === "new"
-          ? snapshot.branch.name
-          : snapshot.branch.base;
-      task.error = undefined;
-      if (task.status === "waiting-review") {
-        task.checks = task.checks.map((check) =>
-          check.state === "unexecuted"
-            ? {
-                ...check,
-                state: "passed" as const,
-                detail: `${check.detail}\n用户已在现有运行环境中完成人工验证并确认验收。`,
-              }
-            : check,
-        );
-        this.log(
-          task,
-          "startup",
-          "用户选择使用已启动的项目自行验证，并确认运行时待验证项通过。",
-          "success",
-        );
-      }
-      const diffReview = await this.diffGate(task);
-      this.assertPassed(
-        validateChangeReview(diffReview),
-        "验收前差异审查未通过，请检查计划外或未覆盖改动",
-      );
-      this.log(task, "startup", `验收通过，提交并推送到 ${branch}`);
+      if (this.delivering.has(id))
+        throw new Error("此任务正在提交，请等待完成");
+      this.delivering.add(id);
       try {
-        const result = await commitAndPush(
-          project,
-          this.vault.get("git:" + project.id),
-          branch,
-          task.title,
-          settings.developer,
-          task.delivery?.commit,
-          (committed) => {
-            task.delivery = committed;
-            this.log(
-              task,
-              "startup",
-              `已创建本地提交 ${committed.commit.slice(0, 8)}，正在推送到 ${committed.remote}/${committed.branch}`,
-            );
-            this.publish(task);
-          },
-          { PATH: executablePath(settings.agent.command) },
+        if (
+          !task.workspace &&
+          this.store
+            .tasks()
+            .some(
+              (other) =>
+                other.id !== id &&
+                other.projectId === task.projectId &&
+                this.queue.has(other.id) &&
+                !other.workspace &&
+                other.workspaceMode !== "isolated",
+            )
+        )
+          throw new Error("同项目原目录中还有任务执行或排队，请停止后提交");
+        const settings = this.store.settings();
+        const snapshot = task.snapshot;
+        if (!snapshot) throw new Error("执行快照缺失");
+        const configured = settings.projects.find(
+          (project) => project.id === snapshot.project.id,
         );
-        task.delivery = {
-          ...result,
-          pushedAt: new Date().toISOString(),
+        const project = {
+          ...snapshot.project,
+          repository: configured?.repository ?? snapshot.project.repository,
+          auth: configured?.auth ?? snapshot.project.auth,
+          username: configured?.username ?? snapshot.project.username,
         };
-        task.status = "accepted";
-        this.log(
-          task,
-          "startup",
-          `代码已推送：${result.remote}/${result.branch} · ${result.commit.slice(0, 8)}`,
-          "success",
+        const branch =
+          snapshot.branch.mode === "new"
+            ? snapshot.branch.name
+            : snapshot.branch.base;
+        task.error = undefined;
+        if (task.status === "waiting-review") {
+          task.checks = task.checks.map((check) =>
+            check.state === "unexecuted"
+              ? {
+                  ...check,
+                  state: "passed" as const,
+                  detail: `${check.detail}\n用户已在现有运行环境中完成人工验证并确认验收。`,
+                }
+              : check,
+          );
+          this.log(
+            task,
+            "startup",
+            "用户选择使用已启动的项目自行验证，并确认运行时待验证项通过。",
+            "success",
+          );
+        }
+        const diffReview = await this.diffGate(task);
+        this.assertPassed(
+          validateChangeReview(diffReview),
+          "验收前差异审查未通过，请检查计划外或未覆盖改动",
         );
-        return this.publish(task);
-      } catch (error) {
-        task.error = this.safe(
-          error instanceof Error ? error.message : String(error),
-        );
-        this.log(task, "startup", task.error, "error");
-        this.publish(task);
-        throw error;
+        this.log(task, "startup", `验收通过，提交并推送到 ${branch}`);
+        try {
+          const result = await commitAndPush(
+            project,
+            this.vault.get("git:" + project.id),
+            branch,
+            task.title,
+            settings.developer,
+            task.delivery?.commit,
+            (committed) => {
+              task.delivery = committed;
+              this.log(
+                task,
+                "startup",
+                `已创建本地提交 ${committed.commit.slice(0, 8)}，正在推送到 ${committed.remote}/${committed.branch}`,
+              );
+              this.publish(task);
+            },
+            { PATH: executablePath(settings.agent.command) },
+          );
+          task.delivery = {
+            ...result,
+            pushedAt: new Date().toISOString(),
+          };
+          task.status = "accepted";
+          this.log(
+            task,
+            "startup",
+            `代码已推送：${result.remote}/${result.branch} · ${result.commit.slice(0, 8)}`,
+            "success",
+          );
+          return this.publish(task);
+        } catch (error) {
+          task.error = this.safe(
+            error instanceof Error ? error.message : String(error),
+          );
+          this.log(task, "startup", task.error, "error");
+          this.publish(task);
+          throw error;
+        }
+      } finally {
+        this.delivering.delete(id);
       }
     }
     if (
       action === "retry" &&
-      this.active?.id === id &&
+      this.active.has(id) &&
       task.status === "stopped"
     ) {
-      for (let attempt = 0; attempt < 100 && this.active?.id === id; attempt++)
+      for (let attempt = 0; attempt < 100 && this.active.has(id); attempt++)
         await new Promise((resolve) => setTimeout(resolve, 50));
     }
     if (action === "retry" && options?.supplement) {
@@ -720,7 +805,7 @@ export class StudioService {
       );
       this.publish(task);
     }
-    if (this.active) throw new Error("已有任务运行中，请等待或停止后再执行");
+    if (this.queue.has(id)) throw new Error("该任务已在执行或排队");
     const stage: Stage =
       action === "analyze"
         ? "analysis"
@@ -731,59 +816,95 @@ export class StudioService {
             : action === "start"
               ? "startup"
               : (task.stage ?? "analysis");
-    if (stage === "development" && !task.plan && action !== "fix")
+    if (
+      stage === "development" &&
+      !task.plan &&
+      action !== "fix" &&
+      !task.executionIntent?.directFix
+    )
       throw new Error("开发计划缺失");
     if (stage !== "analysis" && stage !== "development" && !task.snapshot)
       throw new Error("执行快照缺失");
-    const controller = new AbortController();
-    this.active = { id, controller };
     task.stage = stage;
     task.error = undefined;
-    task.status = {
-      analysis: "analyzing",
-      development: "developing",
-      test: "testing",
-      startup: "starting",
-    }[stage] as Task["status"];
-    this.publish(task);
+    task.status = "queued";
+    task.queued = { action, at: new Date().toISOString() };
     const directFix =
       action === "fix" ||
       (action === "retry" &&
         task.kind === "bug" &&
         Boolean(
+          task.executionIntent?.directFix ||
           task.snapshot?.directFix ||
           task.snapshot?.plan.summary.startsWith("Bug 快速修复"),
         ));
+    const forceTests =
+      action === "repair" ||
+      (action === "retry" && task.executionIntent?.forceTests === true);
+    task.executionIntent = { directFix, forceTests };
+    this.publish(task);
     if (options?.allowDirty && stage === "development")
       this.log(
         task,
         "development",
         "用户已明确确认保留未提交修改并继续；现有修改可能与本次开发一同进入检查、提交和推送。",
       );
-    void this.run(
-      task,
-      stage,
-      controller.signal,
-      action === "repair",
-      directFix,
-      options?.allowDirty === true,
-    )
-      .catch((error) => {
-        if (this.sealed.has(id)) {
+    const source =
+      task.snapshot?.project.directory ??
+      this.project(task.projectId).directory;
+    const canonical = fs.realpathSync(source);
+    const resource =
+      stage === "startup"
+        ? "preview-start"
+        : task.workspaceMode === "isolated" || task.workspace
+          ? `task:${id}`
+          : process.platform === "win32"
+            ? canonical.toLowerCase()
+            : canonical;
+    this.queue.enqueue(id, resource, async () => {
+      const controller = new AbortController();
+      this.active.set(id, controller);
+      task.queued = undefined;
+      task.status = {
+        analysis: "analyzing",
+        development: "developing",
+        test: "testing",
+        startup: "starting",
+      }[stage] as Task["status"];
+      this.publish(task);
+      await this.run(
+        task,
+        stage,
+        controller.signal,
+        forceTests,
+        directFix,
+        options?.allowDirty === true,
+      )
+        .catch((error) => {
+          if (this.sealed.has(id)) {
+            const state = this.sealed.get(id)!;
+            task.status = "stopped";
+            task.error = state.error;
+            task.queued = undefined;
+            this.publish(task);
+            this.sealed.delete(id);
+            return;
+          }
+          task.status = controller.signal.aborted ? "stopped" : "failed";
+          task.error = this.safe(
+            error instanceof Error ? error.message : String(error),
+          );
+          this.log(task, task.stage ?? stage, task.error, "error");
+          this.publish(task);
+        })
+        .finally(() => {
+          this.active.delete(id);
           this.sealed.delete(id);
-          return;
-        }
-        task.status = controller.signal.aborted ? "stopped" : "failed";
-        task.error = this.safe(
-          error instanceof Error ? error.message : String(error),
-        );
-        this.log(task, task.stage ?? stage, task.error, "error");
-        this.publish(task);
-      })
-      .finally(() => {
-        if (this.active?.id === id) this.active = undefined;
-      });
-    return task;
+          this.lastLogFlush.delete(id);
+          this.agents.delete(id);
+        });
+    });
+    return this.store.getTask(id);
   }
   private async recorded(
     task: Task,
@@ -810,6 +931,12 @@ export class StudioService {
         error: error ? this.safe(String(error)) : undefined,
       };
       task.runs = [...(task.runs ?? []), record].slice(-50);
+      const sealed = this.sealed.get(task.id);
+      if (sealed) {
+        task.status = "stopped";
+        task.error = sealed.error;
+        this.log(task, stage, sealed.message);
+      }
       this.publish(task);
     }
   }
@@ -821,6 +948,7 @@ export class StudioService {
     directFix = false,
     allowDirty = false,
   ) {
+    if (stage !== "startup") await this.checkedAgent(task, signal);
     if (stage === "analysis") {
       await this.recorded(task, stage, signal, () =>
         this.analyze(task, signal),
@@ -854,10 +982,45 @@ export class StudioService {
     }
     if (stage === "test") {
       await this.recorded(task, stage, signal, () => this.test(task, signal));
-      stage = "startup";
+      task.stage = "startup";
+      task.status = "waiting-review";
+      this.log(
+        task,
+        "startup",
+        "自动化检查完成，等待按需启动项目或自行验证。",
+        "success",
+      );
+      this.publish(task);
+      return;
     }
     if (stage === "startup")
       await this.recorded(task, stage, signal, () => this.start(task, signal));
+  }
+  private async checkedAgent(task: Task, signal: AbortSignal) {
+    const cached = this.agents.get(task.id);
+    if (cached) return cached;
+    const cwd =
+      task.snapshot?.project.directory ??
+      this.project(task.projectId).directory;
+    const agent = await resolveCodex(this.store.settings().agent.command, {
+      cwd,
+      signal,
+    });
+    try {
+      await runCommand(agent.command, ["login", "status"], {
+        cwd,
+        signal,
+        env: { CODEX_HOME: this.codexHome() },
+        timeout: 15_000,
+      });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw new Error(
+        `Codex 登录检查未通过，请在终端执行 codex login 后重试。${this.safe((error as Error).message)}`,
+      );
+    }
+    this.agents.set(task.id, agent);
+    return agent;
   }
   private async agent(
     task: Task,
@@ -867,7 +1030,6 @@ export class StudioService {
     signal: AbortSignal,
   ) {
     const project = task.snapshot?.project ?? this.project(task.projectId);
-    const settings = this.store.settings();
     const runDir = path.join(
       this.store.directory,
       "runs",
@@ -900,10 +1062,7 @@ export class StudioService {
       `Codex · ${stage === "analysis" ? "只读评估" : "工作区执行"} · ${project.name}`,
     );
     try {
-      const agent = await resolveCodex(settings.agent.command, {
-        cwd: project.directory,
-        signal,
-      });
+      const agent = await this.checkedAgent(task, signal);
       this.log(
         task,
         stage,
@@ -1274,29 +1433,63 @@ export class StudioService {
       );
       if (
         latestTarget !== task.targetCommit ||
-        synced.commit !== task.baseCommit
+        (task.workspaceMode !== "isolated" && synced.commit !== task.baseCommit)
       ) {
         task.plan = undefined;
         throw new Error("所选分支或版本在评估后有更新，请重新评估后再开始开发");
       }
-      const prepared = await prepareBranch(
-        project.directory,
-        task.branch,
-        task.baseCommit,
-        task.targetCommit,
-        signal,
-        allowDirty,
-      );
+      let prepared: { branch: string; commit: string };
+      let executionProject = project;
+      if (task.workspaceMode === "isolated") {
+        task.workspace = await prepareWorkspace(
+          project,
+          task,
+          this.store.directory,
+          signal,
+        );
+        executionProject = { ...project, directory: task.workspace.directory };
+        prepared = {
+          branch: task.workspace.branch,
+          commit: task.workspace.baseCommit,
+        };
+        this.log(
+          task,
+          "development",
+          `独立任务工作区：${task.workspace.directory} · ${prepared.branch}；原目录未提交代码不会带入此任务。`,
+        );
+        this.publish(task);
+        await installWorkspaceDependencies(
+          executionProject.directory,
+          signal,
+          (line) => this.log(task, "development", line),
+          this.store.settings().agent.command,
+        );
+      } else
+        prepared = await prepareBranch(
+          project.directory,
+          task.branch,
+          task.baseCommit,
+          task.targetCommit,
+          signal,
+          allowDirty,
+        );
       this.log(
         task,
         "development",
         `分支已就绪：${prepared.branch} · ${prepared.commit.slice(0, 8)}（仅快进或创建跟踪分支，不自动提交/推送）`,
       );
       task.snapshot = {
-        project: { ...project, hasSecret: undefined },
+        project: { ...executionProject, hasSecret: undefined },
         branch: {
           ...task.branch,
-          ...(task.branch.mode === "existing"
+          ...(task.workspace
+            ? {
+                mode: "new" as const,
+                base: task.branch.base,
+                name: prepared.branch,
+              }
+            : {}),
+          ...(!task.workspace && task.branch.mode === "existing"
             ? { base: prepared.branch, name: prepared.branch }
             : {}),
         },
@@ -1329,9 +1522,7 @@ export class StudioService {
     this.log(task, "development", result.summary);
     task.checks = result.checks;
     if (
-      result.checks.some(
-        (c) => c.state === "failed" || c.state === "blocked",
-      )
+      result.checks.some((c) => c.state === "failed" || c.state === "blocked")
     ) {
       this.publish(task);
       throw new Error("开发阶段存在失败或未完成检查，请查看日志后修复并重试");
@@ -1430,14 +1621,18 @@ export class StudioService {
     for (const script of unique) {
       this.log(task, "test", `执行 npm run ${script}`);
       try {
-        await runCommand(resolveCommand("npm"), ["run", script], {
-          cwd: project.directory,
-          signal,
-          env: { CI: "true", BROWSER: "none" },
-          timeout: 10 * 60_000,
-          onLine: (line, error) =>
-            this.log(task, "test", line, error ? "error" : "info"),
-        });
+        await runCommand(
+          resolveCommand("npm", settings.agent.command),
+          ["run", script],
+          {
+            cwd: project.directory,
+            signal,
+            env: { CI: "true", BROWSER: "none" },
+            timeout: 10 * 60_000,
+            onLine: (line, error) =>
+              this.log(task, "test", line, error ? "error" : "info"),
+          },
+        );
         task.checks.push({
           name: `npm run ${script}`,
           state: "passed",
@@ -1544,9 +1739,7 @@ export class StudioService {
   private async start(task: Task, signal: AbortSignal) {
     if (
       !task.checks.length ||
-      task.checks.some(
-        (c) => c.state === "failed" || c.state === "blocked",
-      )
+      task.checks.some((c) => c.state === "failed" || c.state === "blocked")
     )
       throw new Error("请先完成自动化测试");
     const diffReview = await this.diffGate(task);
@@ -1566,13 +1759,13 @@ export class StudioService {
     };
     if (!info.scripts.includes(project.startScript))
       throw new Error(`项目不存在启动脚本 ${project.startScript}`);
-    const url = safeTargetUrl(project.targetUrl);
-    task.runtime = { startScript: project.startScript, targetUrl: url };
+    let url = safeTargetUrl(project.targetUrl);
     task.stage = "startup";
     task.status = "starting";
     this.publish(task);
     for (const [owner, previous] of this.servers) {
       if (
+        this.store.settings().execution?.previewMode === "multiple" &&
         owner !== task.id &&
         previous.directory !== project.directory &&
         new URL(previous.url).origin !== new URL(url).origin
@@ -1593,7 +1786,45 @@ export class StudioService {
         });
       }
       this.servers.delete(owner);
+      if (owner !== task.id) {
+        const previousTask = this.store.getTask(owner);
+        if (previousTask.status === "review") {
+          previousTask.status = "waiting-review";
+          this.log(
+            previousTask,
+            "startup",
+            "验证服务已切换到其他任务；此任务代码和检查结果保留，可按需重新启动。",
+            "info",
+          );
+          this.publish(previousTask);
+        }
+      }
     }
+    const dependencies = fs.existsSync(
+      path.join(project.directory, "package.json"),
+    )
+      ? JSON.parse(
+          fs.readFileSync(path.join(project.directory, "package.json"), "utf8"),
+        )
+      : {};
+    const isVite = Boolean(
+      dependencies.dependencies?.vite || dependencies.devDependencies?.vite,
+    );
+    const multiple =
+      this.store.settings().execution?.previewMode === "multiple";
+    const target = new URL(url);
+    const desiredPort = Number(
+      target.port || (target.protocol === "https:" ? 443 : 80),
+    );
+    if (multiple && task.workspace) {
+      if (target.protocol !== "http:")
+        throw new Error("多项目验证请配置 HTTP 本地地址");
+      const port = await availablePort(desiredPort);
+      target.port = String(port);
+      url = safeTargetUrl(target.href);
+    }
+    task.runtime = { startScript: project.startScript, targetUrl: url };
+    this.publish(task);
     // An existing responder could be another project: refuse to silently attribute it to this task.
     try {
       const response = await fetch(url, {
@@ -1612,13 +1843,25 @@ export class StudioService {
       "startup",
       `启动 ${project.name} · npm run ${project.startScript}`,
     );
-    const command = resolveCommand("npm");
+    const command = resolveCommand("npm", this.store.settings().agent.command);
     const child = spawn(
       command.executable,
-      [...command.args, "run", project.startScript],
+      [
+        ...command.args,
+        "run",
+        project.startScript,
+        ...(multiple && task.workspace && isVite
+          ? ["--", "--port", new URL(url).port, "--strictPort"]
+          : []),
+      ],
       {
         cwd: project.directory,
-        env: { ...process.env, BROWSER: "none" },
+        env: {
+          ...process.env,
+          PATH: executablePath(this.store.settings().agent.command),
+          BROWSER: "none",
+          PORT: new URL(url).port || String(desiredPort),
+        },
         windowsHide: true,
         detached: process.platform !== "win32",
         shell: false,
@@ -1669,7 +1912,10 @@ export class StudioService {
       }
       if (!ready)
         throw new Error("开发服务 120 秒内未就绪，请检查启动日志和目标地址");
-      await this.openUrl(url);
+      await this.openUrl(url, {
+        title: task.title,
+        branch: task.snapshot!.branch.name,
+      });
       task.status = "review";
       this.log(task, "startup", "开发页已打开，等待人工验收。", "success");
       this.publish(task);
@@ -1681,19 +1927,39 @@ export class StudioService {
       signal.removeEventListener("abort", abort);
     }
   }
-  public async openTarget(id: string) {
+  public async openTarget(id: string, external = false) {
     const task = this.store.getTask(id);
     if (
       !["waiting-review", "review", "accepted"].includes(task.status) ||
       !task.snapshot
     )
       throw new Error("尚未完成启动验证");
-    await this.openUrl(
-      safeTargetUrl(task.runtime?.targetUrl ?? task.snapshot.project.targetUrl),
+    const url = safeTargetUrl(
+      task.runtime?.targetUrl ?? task.snapshot.project.targetUrl,
     );
+    if (
+      external &&
+      [...this.servers].some(
+        ([owner, server]) =>
+          owner !== id && new URL(server.url).origin === new URL(url).origin,
+      )
+    )
+      throw new Error("此地址由另一个任务的验证服务使用，请先启动当前任务验证");
+    if (task.workspace && !this.servers.has(id) && !external)
+      throw new Error(
+        "此任务的验证服务未启动或已切换，请点击启动项目进入验证，避免打开其他任务的页面",
+      );
+    await this.openUrl(url, {
+      title: task.title,
+      branch: task.snapshot.branch.name,
+      external,
+    });
   }
   public close() {
-    this.active?.controller.abort();
+    this.closing = true;
+    this.queue.close();
+    for (const controller of this.active.values()) controller.abort();
+    for (const controller of this.syncControllers.values()) controller.abort();
     for (const server of this.servers.values()) killTree(server.child);
     this.servers.clear();
   }

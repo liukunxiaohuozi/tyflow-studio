@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { StudioAPI, Task } from "../shared/contracts";
 const api: StudioAPI = {
+  openWorkspace: (id) => ipcRenderer.invoke("studio:open-workspace", id),
+  setupChecks: (id) => ipcRenderer.invoke("studio:setup-checks", id),
+  updateStatus: () => ipcRenderer.invoke("studio:update-status"),
+  checkUpdate: () => ipcRenderer.invoke("studio:update-check"),
+  downloadUpdate: () => ipcRenderer.invoke("studio:update-download"),
+  activateUpdate: (rollback) =>
+    ipcRenderer.invoke("studio:update-activate", rollback),
   compareDesigns: (before, after) =>
     ipcRenderer.invoke("studio:compare-designs", before, after),
   bootstrap: () => ipcRenderer.invoke("studio:bootstrap"),
@@ -15,13 +22,13 @@ const api: StudioAPI = {
   repository: (id, sync) => ipcRenderer.invoke("studio:repository", id, sync),
   testConnection: (target, id) =>
     ipcRenderer.invoke("studio:connection", target, id),
-  openZentao: (type, id) =>
-    ipcRenderer.invoke("studio:open-zentao", type, id),
+  openZentao: (type, id) => ipcRenderer.invoke("studio:open-zentao", type, id),
   zentaoCatalog: () => ipcRenderer.invoke("studio:zentao-catalog"),
   saveTask: (input, id) => ipcRenderer.invoke("studio:save-task", input, id),
   taskAction: (id, action, options) =>
     ipcRenderer.invoke("studio:action", id, action, options),
-  openTarget: (id) => ipcRenderer.invoke("studio:open-target", id),
+  openTarget: (id, external) =>
+    ipcRenderer.invoke("studio:open-target", id, external),
   exportTask: (id) => ipcRenderer.invoke("studio:export", id),
   onTask: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, task: Task) =>

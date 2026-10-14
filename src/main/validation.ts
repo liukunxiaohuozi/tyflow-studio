@@ -36,6 +36,22 @@ const project = z
   .strict();
 const settingsSchema = z
   .object({
+    execution: z
+      .object({
+        concurrency: z.number().int().min(1).max(4),
+        previewMode: z.enum(["single", "multiple"]),
+      })
+      .strict()
+      .optional(),
+    updates: z
+      .object({
+        manifestUrl: z.string().max(2048),
+        githubRepository: z.string().regex(/^$|^[\w.-]+\/[\w.-]+$/),
+        checkOnLaunch: z.boolean(),
+        hasSecret: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
     developer: z
       .object({ name: text, email: text, defaultProject: text })
       .strict(),
@@ -76,6 +92,11 @@ const settingsSchema = z
   .strict();
 export function validateSettings(value: unknown): SettingsInput {
   const data = settingsSchema.parse(value);
+  if (data.updates?.manifestUrl) {
+    const url = new URL(data.updates.manifestUrl);
+    if (url.protocol !== "https:" || url.username || url.password)
+      throw new Error("更新地址必须是 HTTPS 地址，凭据请填写在独立字段中");
+  }
   if (new Set(data.projects.map((p) => p.id)).size !== data.projects.length)
     throw new Error("Project IDs must be unique");
   for (const p of data.projects) {
@@ -99,19 +120,20 @@ export function canReuseTestExecution(
 ) {
   return Boolean(
     execution &&
-      execution.sourceSnapshot === expected.sourceSnapshot &&
-      execution.planHash === expected.planHash &&
-      execution.skillHash === expected.skillHash &&
-      execution.contractVersion === 1 &&
-      execution.conclusion === "VERIFIED" &&
-      execution.checks.length > 0 &&
-      execution.checks.every((check) => check.state === "passed") &&
-      execution.evidenceChecks.length > 0 &&
-      execution.evidenceChecks.every((check) => check.state === "passed"),
+    execution.sourceSnapshot === expected.sourceSnapshot &&
+    execution.planHash === expected.planHash &&
+    execution.skillHash === expected.skillHash &&
+    execution.contractVersion === 1 &&
+    execution.conclusion === "VERIFIED" &&
+    execution.checks.length > 0 &&
+    execution.checks.every((check) => check.state === "passed") &&
+    execution.evidenceChecks.length > 0 &&
+    execution.evidenceChecks.every((check) => check.state === "passed"),
   );
 }
 const inputSchema = z
   .object({
+    workspaceMode: z.enum(["isolated", "current"]).optional(),
     title: z.string().min(1).max(160),
     kind: z.enum(["design", "text", "bug"]),
     size: z.enum(["small", "medium", "large"]),
@@ -163,8 +185,9 @@ export function canAct(task: Task, action: TaskAction) {
     test: ["waiting-test"],
     start: ["waiting-review", "review"],
     pause: ["developing"],
-    stop: ["analyzing", "developing", "testing", "starting"],
+    stop: ["queued", "analyzing", "developing", "testing", "starting"],
     terminate: [
+      "queued",
       "draft",
       "analyzing",
       "ready",
@@ -294,38 +317,38 @@ export function normalizePlanTraceability(
 ): Plan {
   const strict = Boolean(
     plan.requirements?.length &&
-      plan.planSteps?.length &&
-      plan.planSteps.every((step) => step.covers?.length && step.expectedFiles?.length) &&
-      plan.testCases.every(
-        (test) => test.covers?.length && test.verifies?.length && test.priority,
-      ),
+    plan.planSteps?.length &&
+    plan.planSteps.every(
+      (step) => step.covers?.length && step.expectedFiles?.length,
+    ) &&
+    plan.testCases.every(
+      (test) => test.covers?.length && test.verifies?.length && test.priority,
+    ),
   );
-  const requirements =
-    plan.requirements?.length
-      ? plan.requirements
-      : [
-          {
-            id: source === "bug" ? "BUG-REQ-001" : "REQ-001",
-            text: plan.summary,
-            priority: "P0" as const,
-            source,
-          },
-        ];
+  const requirements = plan.requirements?.length
+    ? plan.requirements
+    : [
+        {
+          id: source === "bug" ? "BUG-REQ-001" : "REQ-001",
+          text: plan.summary,
+          priority: "P0" as const,
+          source,
+        },
+      ];
   const requirementIds = requirements.map((r) => r.id);
-  const planSteps =
-    plan.planSteps?.length
-      ? plan.planSteps.map((step, index) => ({
-          ...step,
-          id: step.id || id(index, "PLAN"),
-          covers: step.covers?.length ? step.covers : requirementIds,
-          expectedFiles: step.expectedFiles ?? [],
-        }))
-      : plan.steps.map((step, index) => ({
-          id: id(index, "PLAN"),
-          title: step,
-          covers: requirementIds,
-          expectedFiles: [],
-        }));
+  const planSteps = plan.planSteps?.length
+    ? plan.planSteps.map((step, index) => ({
+        ...step,
+        id: step.id || id(index, "PLAN"),
+        covers: step.covers?.length ? step.covers : requirementIds,
+        expectedFiles: step.expectedFiles ?? [],
+      }))
+    : plan.steps.map((step, index) => ({
+        id: id(index, "PLAN"),
+        title: step,
+        covers: requirementIds,
+        expectedFiles: [],
+      }));
   const stepIds = planSteps.map((s) => s.id);
   return {
     ...plan,

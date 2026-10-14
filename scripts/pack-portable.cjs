@@ -11,6 +11,13 @@ const packageJson = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
 );
 const version = packageJson.version;
+const buildSuffix = process.env.STUDIO_PACK_SUFFIX || "";
+if (!/^[\w-]*$/.test(buildSuffix)) throw new Error("Invalid build suffix");
+const buildRelative =
+  process.env.STUDIO_PACK_VERSIONED === "1"
+    ? `release/build-${version}${buildSuffix ? `-${buildSuffix}` : ""}`
+    : "release";
+const buildDirectory = path.join(root, buildRelative);
 const args = new Set(process.argv.slice(2));
 const prepareOnly = args.has("--prepare-only");
 const requested = args.has("--mac")
@@ -68,14 +75,10 @@ function prepareBundle({ persistSeed = false } = {}) {
     exclude: ["workfile", "local", "mcp-server", "requirements", ".git"],
   });
   copyDir(skillSource, path.join(bundleRoot, "skills", "frontend-test"));
-  if (
-    !fs.existsSync(path.join(bundleRoot, "tyflow", "shared", "WORKFLOW.md"))
-  )
+  if (!fs.existsSync(path.join(bundleRoot, "tyflow", "shared", "WORKFLOW.md")))
     throw new Error("Bundled tyflow is missing shared/WORKFLOW.md");
   if (
-    !fs.existsSync(
-      path.join(bundleRoot, "skills", "frontend-test", "SKILL.md"),
-    )
+    !fs.existsSync(path.join(bundleRoot, "skills", "frontend-test", "SKILL.md"))
   )
     throw new Error("Bundled frontend-test skill is missing SKILL.md");
   if (persistSeed) {
@@ -118,7 +121,7 @@ function writeReadme(targetDir, platform) {
 - Windows 包不能在 macOS 运行，反之亦然。
 ${
   isMac
-    ? "- 当前便携包使用 ad-hoc 签名但未做 Apple 公证。若首次下载被系统拦截，请将应用拖入「应用程序」，右键选择「打开」；仍提示损坏时执行：xattr -dr com.apple.quarantine \"/Applications/TingYun Studio.app\"。"
+    ? '- 当前便携包使用 ad-hoc 签名但未做 Apple 公证。若首次下载被系统拦截，请将应用拖入「应用程序」，右键选择「打开」；仍提示损坏时执行：xattr -dr com.apple.quarantine "/Applications/TingYun Studio.app"。'
     : "- 未签名时 Windows 可能出现 SmartScreen 提示，选择仍要运行即可。"
 }
 `;
@@ -164,6 +167,10 @@ function zipPortable(sourcePath, zipPath, { asDirectoryContents = true } = {}) {
 }
 
 function injectBundle(resourcesDir) {
+  fs.writeFileSync(
+    path.join(resourcesDir, "studio-version.json"),
+    JSON.stringify({ version, productName: "TingYun Studio" }),
+  );
   const resourcesBundle = path.join(resourcesDir, "bundle");
   if (fs.existsSync(resourcesBundle))
     fs.rmSync(resourcesBundle, { recursive: true });
@@ -193,13 +200,19 @@ function packWindows() {
   }
   run("npm", ["run", "build"]);
   const localElectron = path.join(root, "node_modules", "electron", "dist");
-  const builderArgs = ["electron-builder", "--win", "dir", "--x64"];
+  const builderArgs = [
+    "electron-builder",
+    "--win",
+    "dir",
+    "--x64",
+    `--config.directories.output=${buildRelative}`,
+  ];
   if (fs.existsSync(path.join(localElectron, "electron.exe"))) {
     builderArgs.push(`--config.electronDist=${localElectron}`);
     console.log(`Using local Electron runtime: ${localElectron}`);
   }
   run("npx", builderArgs);
-  const unpacked = path.join(root, "release", "win-unpacked");
+  const unpacked = path.join(buildDirectory, "win-unpacked");
   if (!fs.existsSync(path.join(unpacked, "TingYun Studio.exe")))
     throw new Error(`Expected executable missing in ${unpacked}`);
   injectBundle(path.join(unpacked, "resources"));
@@ -217,12 +230,12 @@ function findMacApp(arch) {
   const candidates =
     arch === "arm64"
       ? [
-          path.join(root, "release", "mac-arm64", "TingYun Studio.app"),
-          path.join(root, "release", "mac", "TingYun Studio.app"),
+          path.join(buildDirectory, "mac-arm64", "TingYun Studio.app"),
+          path.join(buildDirectory, "mac", "TingYun Studio.app"),
         ]
       : [
-          path.join(root, "release", "mac", "TingYun Studio.app"),
-          path.join(root, "release", "mac-x64", "TingYun Studio.app"),
+          path.join(buildDirectory, "mac", "TingYun Studio.app"),
+          path.join(buildDirectory, "mac-x64", "TingYun Studio.app"),
         ];
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
@@ -233,7 +246,9 @@ function packMac() {
     console.error("Mac 便携包不能在 Windows 上构建。");
     console.error("可选方式：");
     console.error("  1. 在 Mac 上执行: npm run pack:portable:mac");
-    console.error("  2. 推送代码后用 GitHub Actions（macos-latest）自动打 Mac 包");
+    console.error(
+      "  2. 推送代码后用 GitHub Actions（macos-latest）自动打 Mac 包",
+    );
     console.error("");
     console.error(
       "先在本机执行 npm run pack:portable:seed，把 Tyflow/Skill 同步进仓库 portable-bundle/ 再提交，CI 才能打出带 Skill 的 Mac 包。",
@@ -243,7 +258,13 @@ function packMac() {
   run("npm", ["run", "build"]);
   const zips = [];
   for (const arch of ["arm64", "x64"]) {
-    run("npx", ["electron-builder", "--mac", "dir", `--${arch}`]);
+    run("npx", [
+      "electron-builder",
+      "--mac",
+      "dir",
+      `--${arch}`,
+      `--config.directories.output=${buildRelative}`,
+    ]);
     const appPath = findMacApp(arch);
     if (!appPath) throw new Error(`Missing macOS app for ${arch}`);
     injectBundle(path.join(appPath, "Contents", "Resources"));
@@ -273,7 +294,9 @@ if (!requested && !prepareOnly) {
 
 prepareBundle({ persistSeed: args.has("--seed") || prepareOnly });
 if (prepareOnly) {
-  console.log("Seed bundle ready. Commit portable-bundle/ if CI should use it.");
+  console.log(
+    "Seed bundle ready. Commit portable-bundle/ if CI should use it.",
+  );
   process.exit(0);
 }
 

@@ -27,6 +27,7 @@ import type {
 import { Field, Notice } from "./components";
 import { I18nT } from "./i18n";
 import { applyTheme, themeColor } from "./theme";
+import { SetupPanel, UpdatePanel } from "./MaintenancePanels";
 export default function SettingsView({
   settings,
   environment,
@@ -239,6 +240,11 @@ export default function SettingsView({
   }
   const tabs = [
     {
+      key: "updates",
+      icon: RotateCcw,
+      name: I18nT("客户端更新", "App updates"),
+    },
+    {
       key: "developer",
       name: I18nT("开发者与项目", "Developer and projects"),
       icon: UserRound,
@@ -309,6 +315,12 @@ export default function SettingsView({
           </button>
         ))}
       </div>
+      {tab === "updates" && (
+        <UpdatePanel
+          draft={draft}
+          patch={(value) => setDraft((previous) => ({ ...previous, ...value }))}
+        />
+      )}
       {tab === "developer" && (
         <>
           <section className="panel">
@@ -397,7 +409,9 @@ export default function SettingsView({
               <div className="project-create-card">
                 <div className="project-create-heading">
                   <div>
-                    <strong>{I18nT("接入前端项目", "Connect a frontend project")}</strong>
+                    <strong>
+                      {I18nT("接入前端项目", "Connect a frontend project")}
+                    </strong>
                     <p>
                       {I18nT(
                         "项目 ID 保存后作为任务与配置的稳定标识，请使用简短英文名称。",
@@ -436,7 +450,10 @@ export default function SettingsView({
                   <Field label={I18nT("项目名称", "Project name")}>
                     <input
                       value={newProject.name}
-                      placeholder={I18nT("例如 RUM 前端", "For example RUM frontend")}
+                      placeholder={I18nT(
+                        "例如 RUM 前端",
+                        "For example RUM frontend",
+                      )}
                       onChange={(event) =>
                         setNewProject((previous) => ({
                           ...previous,
@@ -447,7 +464,9 @@ export default function SettingsView({
                   </Field>
                 </div>
                 <div className="form-row">
-                  <Field label={I18nT("本地项目目录", "Local project directory")}>
+                  <Field
+                    label={I18nT("本地项目目录", "Local project directory")}
+                  >
                     <div className="input-action">
                       <input
                         value={newProject.directory}
@@ -465,7 +484,10 @@ export default function SettingsView({
                       <button
                         type="button"
                         disabled={!native}
-                        aria-label={I18nT("选择项目目录", "Choose project directory")}
+                        aria-label={I18nT(
+                          "选择项目目录",
+                          "Choose project directory",
+                        )}
                         onClick={() => void chooseDirectory("new")}
                       >
                         <FolderOpen size={17} />
@@ -473,7 +495,10 @@ export default function SettingsView({
                     </div>
                   </Field>
                   <Field
-                    label={I18nT("Git 仓库地址（可选）", "Git repository URL (optional)")}
+                    label={I18nT(
+                      "Git 仓库地址（可选）",
+                      "Git repository URL (optional)",
+                    )}
                   >
                     <input
                       value={newProject.repository}
@@ -491,7 +516,11 @@ export default function SettingsView({
                   <button type="button" onClick={() => setAddingProject(false)}>
                     {I18nT("取消", "Cancel")}
                   </button>
-                  <button className="primary" type="button" onClick={addProject}>
+                  <button
+                    className="primary"
+                    type="button"
+                    onClick={addProject}
+                  >
                     <Plus size={15} />
                     {I18nT("添加并继续配置", "Add and continue setup")}
                   </button>
@@ -528,7 +557,9 @@ export default function SettingsView({
                   <Field label={I18nT("项目名称", "Project name")}>
                     <input
                       value={project.name}
-                      onChange={(event) => projectPatch({ name: event.target.value })}
+                      onChange={(event) =>
+                        projectPatch({ name: event.target.value })
+                      }
                     />
                   </Field>
                 </div>
@@ -811,6 +842,85 @@ export default function SettingsView({
               {I18nT("检查执行环境", "Check execution environment")}
             </button>
           </section>
+          {tab === "runtime" && (
+            <>
+              <section className="panel">
+                <h2>
+                  {I18nT("任务并行与验证方式", "Parallel tasks and previews")}
+                </h2>
+                <div className="form-row">
+                  <Field label={I18nT("同时执行任务数", "Concurrent tasks")}>
+                    <select
+                      value={draft.execution?.concurrency ?? 2}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          execution: {
+                            concurrency: Number(event.target.value),
+                            previewMode:
+                              draft.execution?.previewMode ?? "single",
+                          },
+                        })
+                      }
+                    >
+                      {[1, 2, 3, 4].map((count) => (
+                        <option key={count} value={count}>
+                          {count}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label={I18nT("项目验证方式", "Preview mode")}>
+                    <select
+                      value={draft.execution?.previewMode ?? "single"}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          execution: {
+                            concurrency: draft.execution?.concurrency ?? 2,
+                            previewMode: event.target.value as
+                              "single" | "multiple",
+                          },
+                        })
+                      }
+                    >
+                      <option value="single">
+                        {I18nT(
+                          "按需切换一个项目（推荐）",
+                          "Switch one project on demand (recommended)",
+                        )}
+                      </option>
+                      <option value="multiple">
+                        {I18nT(
+                          "同时启动多个项目",
+                          "Run multiple project previews",
+                        )}
+                      </option>
+                    </select>
+                  </Field>
+                </div>
+                <p>
+                  {I18nT(
+                    "开发任务可以并行，超过上限自动排队。默认只在点击验证时启动项目，复用一个验证窗口。",
+                    "Development runs in parallel; excess tasks queue. By default, projects start only when requested and share one verification window.",
+                  )}
+                </p>
+                <Field label={I18nT("体检项目", "Project for setup checks")}>
+                  <select
+                    value={projectId}
+                    onChange={(event) => setProjectId(event.target.value)}
+                  >
+                    {draft.projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </section>
+              <SetupPanel projectId={projectId} />
+            </>
+          )}
           <section className="panel">
             <h2>{I18nT("当前环境", "Current environment")}</h2>
             <div className="environment-grid">
@@ -949,9 +1059,14 @@ export default function SettingsView({
             </div>
             <div className="form-row three">
               <Field label={I18nT("本地项目", "Local project")}>
-                <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+                <select
+                  value={projectId}
+                  onChange={(e) => setProjectId(e.target.value)}
+                >
                   {draft.projects.map((item) => (
-                    <option key={item.id} value={item.id}>{item.name}</option>
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
                   ))}
                 </select>
               </Field>
@@ -967,16 +1082,21 @@ export default function SettingsView({
                           ...draft.zentao.mappings,
                           [projectId]: {
                             productId: e.target.value,
-                            projectId: draft.zentao.mappings[projectId]?.projectId || "",
+                            projectId:
+                              draft.zentao.mappings[projectId]?.projectId || "",
                           },
                         },
                       },
                     })
                   }
                 >
-                  <option value="">{I18nT("请选择产品", "Select product")}</option>
+                  <option value="">
+                    {I18nT("请选择产品", "Select product")}
+                  </option>
                   {zentaoCatalog?.products.map((item) => (
-                    <option key={item.id} value={item.id}>{item.name}</option>
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
                   ))}
                 </select>
               </Field>
@@ -991,7 +1111,8 @@ export default function SettingsView({
                         mappings: {
                           ...draft.zentao.mappings,
                           [projectId]: {
-                            productId: draft.zentao.mappings[projectId]?.productId || "",
+                            productId:
+                              draft.zentao.mappings[projectId]?.productId || "",
                             projectId: e.target.value,
                           },
                         },
@@ -999,9 +1120,13 @@ export default function SettingsView({
                     })
                   }
                 >
-                  <option value="">{I18nT("请选择项目", "Select project")}</option>
+                  <option value="">
+                    {I18nT("请选择项目", "Select project")}
+                  </option>
                   {zentaoCatalog?.projects.map((item) => (
-                    <option key={item.id} value={item.id}>{item.name}</option>
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
                   ))}
                 </select>
               </Field>
@@ -1052,7 +1177,10 @@ export default function SettingsView({
               {I18nT("启用任务通知", "Enable task notifications")}
             </label>
           </div>
-          <fieldset className="plain-fieldset" disabled={!draft.notifications.enabled}>
+          <fieldset
+            className="plain-fieldset"
+            disabled={!draft.notifications.enabled}
+          >
             <label className="checkbox">
               <input
                 type="checkbox"
@@ -1070,12 +1198,29 @@ export default function SettingsView({
               {I18nT("Windows 桌面通知", "Windows desktop notifications")}
             </label>
             <div className="environment-grid">
-              {([
-                ["planReady", I18nT("方案完成，等待审批", "Plan ready for approval")],
-                ["developmentComplete", I18nT("开发完成，等待自动化测试", "Development complete; awaiting tests")],
-                ["acceptanceReady", I18nT("开发与测试完成，等待验收", "Development and testing complete; awaiting acceptance")],
-                ["failed", I18nT("任务执行失败", "Task execution failed")],
-              ] as const).map(([key, label]) => (
+              {(
+                [
+                  [
+                    "planReady",
+                    I18nT("方案完成，等待审批", "Plan ready for approval"),
+                  ],
+                  [
+                    "developmentComplete",
+                    I18nT(
+                      "开发完成，等待自动化测试",
+                      "Development complete; awaiting tests",
+                    ),
+                  ],
+                  [
+                    "acceptanceReady",
+                    I18nT(
+                      "开发与测试完成，等待验收",
+                      "Development and testing complete; awaiting acceptance",
+                    ),
+                  ],
+                  ["failed", I18nT("任务执行失败", "Task execution failed")],
+                ] as const
+              ).map(([key, label]) => (
                 <label className="checkbox" key={key}>
                   <input
                     type="checkbox"
@@ -1244,9 +1389,7 @@ export default function SettingsView({
         </Notice>
       )}
       <div className="actionbar settings-actionbar">
-        <span
-          className={`action-hint ${dirty ? "is-dirty" : "is-saved"}`}
-        >
+        <span className={`action-hint ${dirty ? "is-dirty" : "is-saved"}`}>
           <SlidersHorizontal size={16} />
           <span>
             <strong>

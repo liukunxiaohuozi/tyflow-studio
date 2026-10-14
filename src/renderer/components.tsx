@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, FileText, X } from "lucide-react";
 import type { TaskStatus, Task } from "../shared/contracts";
 import { I18nT } from "./i18n";
 export const activeStatuses: TaskStatus[] = [
+  "queued",
   "analyzing",
   "developing",
   "testing",
@@ -10,6 +11,7 @@ export const activeStatuses: TaskStatus[] = [
 ];
 export function statusLabel(status: TaskStatus) {
   const values: Record<TaskStatus, string> = {
+    queued: I18nT("排队中", "Queued"),
     draft: I18nT("草稿", "Draft"),
     analyzing: I18nT("评估中", "Assessing"),
     ready: I18nT("待确认", "Ready"),

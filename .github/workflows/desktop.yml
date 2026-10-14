@@ -22,11 +22,8 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: npm run typecheck
       - run: npm run lint
-      - if: runner.os == 'Windows'
+      - name: Run regression and real Git integration on this platform
         run: npm test
-      - if: runner.os == 'macOS'
-        name: Run platform-independent tests
-        run: npx jest tests/core.test.ts tests/theme.test.ts tests/bundle.test.ts tests/zentao.test.ts tests/vault.test.ts --runInBand
       - run: npm run scan
       - name: Ensure portable skill bundle
         run: |
@@ -46,6 +43,9 @@ jobs:
         run: npm run pack:portable:mac
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - if: runner.os == 'macOS'
+        name: Smoke packaged macOS app on runner architecture
+        run: node scripts/smoke-macos.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: TingYun-Studio-portable-${{ runner.os }}
@@ -57,6 +57,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Download Windows and macOS packages
         uses: actions/download-artifact@v4
         with:
@@ -80,6 +81,8 @@ jobs:
           fi
           test -n "$release_id"
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+      - name: Generate update integrity manifest
+        run: node scripts/create-update-manifest.cjs release-artifacts
       - name: Upload packages with retries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -117,6 +120,15 @@ jobs:
               exit 1
             fi
           done
+          manifest="release-artifacts/update-manifest.json"
+          manifest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/${{ steps.release.outputs.release_id }}/assets" --paginate --jq '.[] | select(.name == "update-manifest.json") | .id' | head -n 1)"
+          if [ -n "$manifest_id" ]; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$manifest_id"
+          fi
+          curl --retry 3 --fail-with-body --silent --show-error \
+            --request POST --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Content-Type: application/json" --data-binary "@$manifest" \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/${{ steps.release.outputs.release_id }}/assets?name=update-manifest.json" >/dev/null
       - name: Verify published packages
         env:
           GH_TOKEN: ${{ github.token }}
@@ -132,6 +144,7 @@ jobs:
               exit 1
             fi
           done
+          grep -Fqx "update-manifest.json" <<<"$published"
       - name: Publish verified GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

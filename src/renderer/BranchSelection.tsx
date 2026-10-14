@@ -7,7 +7,7 @@ function suggestedBranch() {
   return `feat/studio-${new Date()
     .toISOString()
     .replace(/[-:T.Z]/g, "")
-    .slice(0, 14)}`;
+    .slice(0, 14)}-${crypto.randomUUID().slice(0, 6)}`;
 }
 
 export default function BranchSelection({
@@ -48,7 +48,36 @@ export default function BranchSelection({
           </small>
         </div>
       </div>
-      {repo?.dirty && (
+      <Field label={I18nT("任务工作区", "Task workspace")}>
+        <select
+          disabled={disabled}
+          value={input.workspaceMode ?? "current"}
+          onChange={(event) =>
+            patch({
+              workspaceMode: event.target.value as TaskInput["workspaceMode"],
+            })
+          }
+        >
+          <option value="isolated">
+            {I18nT(
+              "独立工作区（支持并行）",
+              "Isolated workspace (parallel tasks)",
+            )}
+          </option>
+          <option value="current">
+            {I18nT("当前项目目录", "Current project directory")}
+          </option>
+        </select>
+      </Field>
+      {input.workspaceMode === "isolated" && (
+        <Notice>
+          {I18nT(
+            "从已提交版本创建独立目录和任务分支；原目录未提交代码不会带入。选择已有分支时，将以它为基线创建任务分支，验收后推送任务分支。验证项目按需启动，不会自动打开多个窗口。",
+            "Create an isolated directory and task branch from committed code. Uncommitted source changes are excluded. An existing branch becomes the baseline; acceptance pushes the separate task branch. Previews start on demand.",
+          )}
+        </Notice>
+      )}
+      {repo?.dirty && input.workspaceMode !== "isolated" && (
         <Notice tone="error">
           {I18nT(
             "工作区存在未提交修改，请先处理后再开始。客户端不会覆盖已有修改。",
@@ -86,12 +115,25 @@ export default function BranchSelection({
                 <strong>
                   {mode === "new"
                     ? I18nT("新建分支", "Create branch")
-                    : I18nT("使用已有分支", "Use existing branch")}
+                    : input.workspaceMode === "isolated"
+                      ? I18nT(
+                          "已有分支作为基线",
+                          "Use an existing branch as baseline",
+                        )
+                      : I18nT("使用已有分支", "Use existing branch")}
                 </strong>
                 <small>
                   {mode === "new"
                     ? I18nT("从所选基线创建", "Create from selected base")
-                    : I18nT("直接在所选分支开发", "Develop on selected branch")}
+                    : input.workspaceMode === "isolated"
+                      ? I18nT(
+                          "从所选版本创建独立任务分支",
+                          "Create a task branch from the selected version",
+                        )
+                      : I18nT(
+                          "直接在所选分支开发",
+                          "Develop on selected branch",
+                        )}
                 </small>
               </span>
             </label>
@@ -101,7 +143,7 @@ export default function BranchSelection({
       <div className="form-row branch-fields">
         <Field
           label={
-            input.branch.mode === "new"
+            input.branch.mode === "new" || input.workspaceMode === "isolated"
               ? I18nT("基线分支", "Base branch")
               : I18nT("开发分支", "Development branch")
           }
@@ -162,15 +204,17 @@ export default function BranchSelection({
           </Field>
         )}
       </div>
-      {selectedRemote && input.branch.mode === "existing" && (
-        <Notice>
-          {I18nT(
-            "将使用对应的本地跟踪分支：",
-            "The matching local tracking branch will be used: ",
-          )}
-          {selectedRemote.branch}
-        </Notice>
-      )}
+      {selectedRemote &&
+        input.branch.mode === "existing" &&
+        input.workspaceMode !== "isolated" && (
+          <Notice>
+            {I18nT(
+              "将使用对应的本地跟踪分支：",
+              "The matching local tracking branch will be used: ",
+            )}
+            {selectedRemote.branch}
+          </Notice>
+        )}
       {selectedLocal?.upstreamMissing && (
         <Notice tone="error">
           {I18nT(

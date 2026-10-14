@@ -34,6 +34,7 @@ interface Props {
   api?: StudioAPI;
   simulated?: boolean;
   task?: Task;
+  defaultProjectId?: string;
   settings: Settings;
   onTask: (task: Task) => void;
   report: (message: string, error?: boolean) => void;
@@ -43,10 +44,11 @@ function suggestedBranch() {
   return `feat/studio-${new Date()
     .toISOString()
     .replace(/[-:T.Z]/g, "")
-    .slice(0, 14)}`;
+    .slice(0, 14)}-${crypto.randomUUID().slice(0, 6)}`;
 }
 function inputFromTask(task: Task): TaskInput {
   return {
+    workspaceMode: task.workspaceMode ?? "current",
     title: task.title,
     kind: task.kind,
     size: task.size,
@@ -62,27 +64,33 @@ export default function TaskEditor({
   api = window.studio,
   simulated = false,
   task,
+  defaultProjectId,
   settings,
   onTask,
   report,
   openSettings,
 }: Props) {
+  const initialProjectId =
+    [defaultProjectId, settings.developer.defaultProject].find((id) =>
+      settings.projects.some((p) => p.id === id),
+    ) ||
+    settings.projects[0]?.id ||
+    "";
   const [input, setInput] = useState<TaskInput>(() =>
     task
       ? inputFromTask(task)
       : {
+          workspaceMode: "isolated",
           title: "",
           description: "",
           kind: "design",
           size: "medium",
-          projectId:
-            settings.developer.defaultProject || settings.projects[0]?.id || "",
+          projectId: initialProjectId,
           assetIds: [],
           branch: {
             mode:
-              settings.projects.find(
-                (p) => p.id === settings.developer.defaultProject,
-              )?.defaultBranchMode || "new",
+              settings.projects.find((p) => p.id === initialProjectId)
+                ?.defaultBranchMode || "new",
             base: "",
             name: suggestedBranch(),
             version: "",
@@ -406,9 +414,7 @@ export default function TaskEditor({
       setEditMode(false);
       onTask(saved);
       if (analyze)
-        onTask(
-          await api.taskAction(saved.id, "analyze", { allowDirty }),
-        );
+        onTask(await api.taskAction(saved.id, "analyze", { allowDirty }));
       else report(I18nT("草稿已保存", "Draft saved"));
     } catch (error) {
       report(String((error as Error).message), true);
@@ -480,7 +486,7 @@ export default function TaskEditor({
     }
   }
   function continueAction(action: "analyze" | "develop" | "fix") {
-    if (repo?.dirty) {
+    if (repo?.dirty && input.workspaceMode !== "isolated") {
       setDirtyConfirmed(false);
       setDirtyAction(action);
       return;
@@ -634,7 +640,10 @@ export default function TaskEditor({
             <div className="project-create-card">
               <div className="form-row">
                 <Field
-                  label={I18nT("关联我的禅道事项（可选）", "Link my ZenTao item (optional)")}
+                  label={I18nT(
+                    "关联我的禅道事项（可选）",
+                    "Link my ZenTao item (optional)",
+                  )}
                   hint={I18nT(
                     "列表来自当前账号负责的任务和 Bug，无需填写 ID。",
                     "Loaded from tasks and bugs assigned to the current account; no ID entry needed.",
@@ -642,7 +651,11 @@ export default function TaskEditor({
                 >
                   <select
                     disabled={running}
-                    value={input.zentao ? `${input.zentao.type}:${input.zentao.id}` : ""}
+                    value={
+                      input.zentao
+                        ? `${input.zentao.type}:${input.zentao.id}`
+                        : ""
+                    }
                     onChange={(event) => {
                       const [type, id] = event.target.value.split(":");
                       patch({
@@ -652,25 +665,40 @@ export default function TaskEditor({
                       });
                     }}
                   >
-                    <option value="">{I18nT("不关联禅道事项", "Do not link an item")}</option>
+                    <option value="">
+                      {I18nT("不关联禅道事项", "Do not link an item")}
+                    </option>
                     {zentaoItems.map((item) => (
-                      <option key={`${item.type}:${item.id}`} value={`${item.type}:${item.id}`}>
-                        {item.type === "task" ? I18nT("任务", "Task") : "Bug"} #{item.id} · {item.name}
+                      <option
+                        key={`${item.type}:${item.id}`}
+                        value={`${item.type}:${item.id}`}
+                      >
+                        {item.type === "task" ? I18nT("任务", "Task") : "Bug"} #
+                        {item.id} · {item.name}
                       </option>
                     ))}
                   </select>
                 </Field>
                 <Field label={I18nT("禅道条目", "ZenTao item")}>
                   <div className="input-action">
-                    <button type="button" disabled={zentaoBusy || running} onClick={() => void loadZentaoItems()}>
-                      {zentaoBusy ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+                    <button
+                      type="button"
+                      disabled={zentaoBusy || running}
+                      onClick={() => void loadZentaoItems()}
+                    >
+                      {zentaoBusy ? (
+                        <Loader2 className="spin" size={15} />
+                      ) : (
+                        <RefreshCw size={15} />
+                      )}
                       {I18nT("刷新列表", "Refresh list")}
                     </button>
                     <button
                       type="button"
                       disabled={!native || !input.zentao?.id}
                       onClick={() =>
-                        input.zentao && void api?.openZentao(input.zentao.type, input.zentao.id)
+                        input.zentao &&
+                        void api?.openZentao(input.zentao.type, input.zentao.id)
                       }
                     >
                       <ExternalLink size={15} />
@@ -1384,10 +1412,7 @@ export default function TaskEditor({
       )}
       {dirtyAction && (
         <Modal
-          title={I18nT(
-            "检测到未提交代码",
-            "Uncommitted changes detected",
-          )}
+          title={I18nT("检测到未提交代码", "Uncommitted changes detected")}
           close={() => {
             setDirtyAction(undefined);
             setDirtyConfirmed(false);
@@ -1407,10 +1432,7 @@ export default function TaskEditor({
             />
             <span>
               <strong>
-                {I18nT(
-                  "不管，我就要进行下一步",
-                  "Continue anyway",
-                )}
+                {I18nT("不管，我就要进行下一步", "Continue anyway")}
               </strong>
             </span>
           </label>

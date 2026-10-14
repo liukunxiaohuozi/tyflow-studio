@@ -18,6 +18,10 @@ if (process.argv.slice(2).join(" ") === "exec --help") {
   );
   process.exit(0);
 }
+if (process.argv.slice(2).join(" ") === "login status") {
+  console.log(config.loggedOut ? "Not logged in" : "Logged in with fixture credentials");
+  process.exit(config.loggedOut ? 1 : 0);
+}
 let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {

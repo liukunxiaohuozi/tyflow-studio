@@ -7,19 +7,30 @@ import {
   Search,
 } from "lucide-react";
 import type { Settings, Task } from "../shared/contracts";
-import { Empty, Status, statusLabel } from "./components";
+import { activeStatuses, Empty, Status, statusLabel } from "./components";
 import { I18nT } from "./i18n";
 export default function Records({
-  tasks,
+  tasks: allTasks,
   settings,
   open,
   create,
+  projectScope,
+  configure,
 }: {
   tasks: Task[];
   settings: Settings;
   open: (task: Task) => void;
   create: () => void;
+  projectScope?: Settings["projects"][number];
+  configure?: () => void;
 }) {
+  const tasks = useMemo(
+    () =>
+      projectScope
+        ? allTasks.filter((t) => t.projectId === projectScope.id)
+        : allTasks,
+    [allTasks, projectScope],
+  );
   const [query, setQuery] = useState("");
   const [project, setProject] = useState("");
   const [kind, setKind] = useState("");
@@ -46,16 +57,21 @@ export default function Records({
   const metrics = [
     { value: tasks.length, label: I18nT("全部任务", "All tasks") },
     {
-      value: tasks.filter((t) =>
-        ["analyzing", "developing", "testing", "starting"].includes(t.status),
+      value: tasks.filter(
+        (t) => activeStatuses.includes(t.status) && t.status !== "queued",
       ).length,
       label: I18nT("正在执行", "Running"),
     },
     {
       value: tasks.filter((t) =>
-        ["ready", "review", "waiting-test", "waiting-review"].includes(
-          t.status,
-        ),
+        [
+          "queued",
+          "failed",
+          "ready",
+          "review",
+          "waiting-test",
+          "waiting-review",
+        ].includes(t.status),
       ).length,
       label: I18nT("待处理", "Needs attention"),
     },
@@ -69,23 +85,66 @@ export default function Records({
       <header className="page-heading">
         <div>
           <div className="eyebrow">
-            {I18nT("工作台 / 需求记录", "Workspace / Requirement records")}
+            {projectScope
+              ? I18nT(
+                  "接入项目 / 项目工作台",
+                  "Connected projects / Project workspace",
+                )
+              : I18nT("工作台 / 需求记录", "Workspace / Requirement records")}
           </div>
-          <h1>{I18nT("需求记录", "Requirement records")}</h1>
+          <h1>
+            {projectScope?.name || I18nT("需求记录", "Requirement records")}
+          </h1>
           <p>
-            {I18nT(
-              "每一次需求、设计交付和 Bug 修复，都有完整记录。",
-              "A complete record of every requirement, design delivery and bug fix.",
-            )}
+            {projectScope
+              ? I18nT(
+                  "这里仅显示当前项目的任务，新建任务会默认选择此项目。",
+                  "Only tasks for this project appear here. New tasks default to this project.",
+                )
+              : I18nT(
+                  "每一次需求、设计交付和 Bug 修复，都有完整记录。",
+                  "A complete record of every requirement, design delivery and bug fix.",
+                )}
           </p>
         </div>
         <div className="page-heading-actions">
+          {projectScope && configure && (
+            <button onClick={configure}>
+              {I18nT("管理项目配置", "Manage project settings")}
+            </button>
+          )}
           <button className="primary" onClick={create}>
             <Plus size={16} />
-            {I18nT("新建任务", "New task")}
+            {projectScope
+              ? I18nT("在此项目新建任务", "New task in this project")
+              : I18nT("新建任务", "New task")}
           </button>
         </div>
       </header>
+      {projectScope && (
+        <section className="panel project-workspace-details">
+          <div>
+            <span>{I18nT("本地目录", "Local directory")}</span>
+            <code>
+              {projectScope.directory || I18nT("未配置", "Not configured")}
+            </code>
+          </div>
+          <div>
+            <span>{I18nT("Git 仓库", "Git repository")}</span>
+            <span>
+              {projectScope.repository
+                ? I18nT("已配置", "Configured")
+                : I18nT("未配置", "Not configured")}
+            </span>
+          </div>
+          <div>
+            <span>{I18nT("启动命令", "Startup command")}</span>
+            <code>
+              {projectScope.startScript || I18nT("未配置", "Not configured")}
+            </code>
+          </div>
+        </section>
+      )}
       <div className="metrics" aria-label={I18nT("任务概况", "Task overview")}>
         {metrics.map((m) => (
           <div key={m.label}>
@@ -111,21 +170,23 @@ export default function Records({
               }}
             />
           </label>
-          <select
-            aria-label={I18nT("筛选项目", "Filter project")}
-            value={project}
-            onChange={(e) => {
-              setProject(e.target.value);
-              setPage(1);
-            }}
-          >
-            <option value="">{I18nT("全部项目", "All projects")}</option>
-            {settings.projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+          {!projectScope && (
+            <select
+              aria-label={I18nT("筛选项目", "Filter project")}
+              value={project}
+              onChange={(e) => {
+                setProject(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">{I18nT("全部项目", "All projects")}</option>
+              {settings.projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
           <select
             aria-label={I18nT("筛选类型", "Filter type")}
             value={kind}

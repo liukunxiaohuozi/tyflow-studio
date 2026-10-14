@@ -104,9 +104,9 @@ export default function RunView({
   const [follow, setFollow] = useState(true);
   const [busy, setBusy] = useState(false);
   const [supplementOpen, setSupplementOpen] = useState(false);
-  const [supplementOrigin, setSupplementOrigin] = useState<
-    "paused" | "failed"
-  >("failed");
+  const [supplementOrigin, setSupplementOrigin] = useState<"paused" | "failed">(
+    "failed",
+  );
   const [startConfirmOpen, setStartConfirmOpen] = useState(false);
   const [supplementText, setSupplementText] = useState("");
   const [supplementAssets, setSupplementAssets] = useState<Task["assets"]>([]);
@@ -272,6 +272,31 @@ export default function RunView({
             "开发已完成，代码检查已通过；运行时效果等待你验证。可以由 Studio 启动项目，也可以使用已经启动的项目自行验证。这个状态不是执行错误。",
             "Development is complete and code checks passed. Runtime behavior awaits your review. Start the project with Studio or review an already-running project. This is not an execution failure.",
           )}
+        </Notice>
+      )}
+      {task.status === "queued" && (
+        <Notice>
+          {I18nT(
+            "任务已排队，空闲后会自动执行。你可以切换到其他任务，也可以停止此任务。",
+            "Task queued and will run when a slot is free. You can switch tasks or stop this task.",
+          )}
+        </Notice>
+      )}
+      {task.workspace && (
+        <Notice>
+          {I18nT("独立任务工作区", "Isolated task workspace")} ·{" "}
+          {task.workspace.branch}
+          <br />
+          <span className="mono">{task.workspace.directory}</span>{" "}
+          <button
+            onClick={() =>
+              void api
+                ?.openWorkspace?.(task.id)
+                .catch((error) => report(error.message, true))
+            }
+          >
+            {I18nT("打开工作区", "Open workspace")}
+          </button>
         </Notice>
       )}
       {task.status === "review" && (
@@ -659,9 +684,7 @@ export default function RunView({
               />
               {Boolean(task.supplements?.length) && (
                 <div className="supplement-history">
-                  <small>
-                    {I18nT("补充记录", "Supplement history")}
-                  </small>
+                  <small>{I18nT("补充记录", "Supplement history")}</small>
                   {task.supplements?.map((item, index) => (
                     <div key={item.id} className="supplement-record">
                       <strong>
@@ -732,7 +755,7 @@ export default function RunView({
         <div className="actions">
           {running ? (
             <>
-              {task.kind === "bug" && task.stage === "development" && (
+              {task.kind === "bug" && task.status === "developing" && (
                 <button
                   className="primary"
                   disabled={busy}
@@ -798,15 +821,15 @@ export default function RunView({
                 </button>
               )}
               {task.status === "waiting-review" && (
-                  <button
-                    className="primary"
-                    disabled={busy}
-                    onClick={() => setStartConfirmOpen(true)}
-                  >
-                    <Play size={15} />
-                    {I18nT("启动项目进入验证", "Start project for review")}
-                  </button>
-                )}
+                <button
+                  className="primary"
+                  disabled={busy}
+                  onClick={() => setStartConfirmOpen(true)}
+                >
+                  <Play size={15} />
+                  {I18nT("启动项目进入验证", "Start project for review")}
+                </button>
+              )}
               {["waiting-review", "review", "accepted"].includes(
                 task.status,
               ) && (
@@ -821,6 +844,40 @@ export default function RunView({
                   {I18nT("打开开发页面", "Open development page")}
                 </button>
               )}
+              {!simulated &&
+                ["waiting-review", "review", "accepted"].includes(
+                  task.status,
+                ) && (
+                  <button
+                    disabled={busy}
+                    onClick={() => {
+                      if (
+                        task.status === "waiting-review" &&
+                        !window.confirm(
+                          I18nT(
+                            "请确认已运行的是当前任务工作区与分支，再打开现有浏览器验证。",
+                            "Confirm that the running project uses this task's workspace and branch before reviewing it in your browser.",
+                          ) +
+                            "\n" +
+                            (task.workspace?.directory ??
+                              task.snapshot?.project.directory ??
+                              "") +
+                            "\n" +
+                            (task.workspace?.branch ??
+                              task.snapshot?.branch.name ??
+                              ""),
+                        )
+                      )
+                        return;
+                      void api
+                        ?.openTarget(task.id, true)
+                        .catch((error) => report(error.message, true));
+                    }}
+                  >
+                    <ExternalLink size={16} />
+                    {I18nT("在浏览器验证", "Review in browser")}
+                  </button>
+                )}
               {["waiting-review", "review"].includes(task.status) && (
                 <button
                   className="primary"
@@ -859,10 +916,7 @@ export default function RunView({
         </div>
         {startConfirmOpen && (
           <Modal
-            title={I18nT(
-              "启动项目进入验证？",
-              "Start the project for review?",
-            )}
+            title={I18nT("启动项目进入验证？", "Start the project for review?")}
             close={() => setStartConfirmOpen(false)}
           >
             <p>

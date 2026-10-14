@@ -311,6 +311,27 @@ strong {
   flex: 1;
   text-align: left;
 }
+.sidebar-projects button.selected {
+  background: var(--tint);
+  color: var(--primary);
+}
+.project-workspace-details {
+  display: grid;
+  gap: 12px;
+  padding: 18px 22px;
+}
+.project-workspace-details > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.project-workspace-details > div > span:first-child {
+  color: #526176;
+  min-width: 80px;
+}
+.project-workspace-details code {
+  overflow-wrap: anywhere;
+}
 .project-dot {
   display: inline-block;
   width: 6px;
@@ -2705,4 +2726,25 @@ main.task-intake {
   background: #fff;
   border: 1px solid #d9e0ed;
   border-radius: 50%;
+}
+.setup-checks {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+.setup-check {
+  border: 1px solid #dbe3ed;
+  border-left: 3px solid #94a3b8;
+  padding: 12px;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.setup-check.passed {
+  border-left-color: #10b981;
+}
+.setup-check.failed {
+  border-left-color: #ef4444;
+}
+.setup-check.warning {
+  border-left-color: #f59e0b;
 }

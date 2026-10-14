@@ -16,6 +16,7 @@ let store: Store;
 let service: StudioService;
 let observed: Task[];
 let opened: string[];
+let openingContexts: { external?: boolean }[];
 const secret = "fixture-private-token-never-persist";
 const originalCodexHome = process.env.CODEX_HOME;
 const credentials = {
@@ -188,12 +189,14 @@ beforeEach(() => {
   store.saveSettings(settings);
   observed = [];
   opened = [];
+  openingContexts = [];
   service = new StudioService(
     store,
     credentials,
     (task) => observed.push(task),
-    async (url) => {
+    async (url, context) => {
       opened.push(url);
+      openingContexts.push({ external: context?.external });
     },
   );
 });
@@ -222,6 +225,120 @@ test("opens a linked ZenTao item under the configured site", async () => {
   expect(opened).toEqual([
     "https://zentao.example.test/zentao/task-view-81742.html",
   ]);
+});
+
+test("two isolated Bug repairs execute separately while a third queues; stopping it leaves both active", async () => {
+  fs.writeFileSync(path.join(repository, "unfinished.txt"), "keep user work");
+  configure({ delay: 1800 });
+  const make = () =>
+    create({
+      kind: "bug",
+      workspaceMode: "isolated",
+      branch: { mode: "existing", base: "main", name: "main", version: "" },
+    });
+  const first = make(),
+    second = make(),
+    third = make();
+  await service.action(first.id, "fix");
+  await service.action(second.id, "fix");
+  expect((await service.action(third.id, "fix")).status).toBe("queued");
+  await service.action(third.id, "stop");
+  await until(() => calls().length === 2);
+  expect(store.getTask(first.id).status).toBe("developing");
+  expect(store.getTask(second.id).status).toBe("developing");
+  await status(first.id, "waiting-review");
+  await status(second.id, "waiting-review");
+  const a = store.getTask(first.id),
+    b = store.getTask(second.id);
+  expect(a.snapshot?.project.directory).not.toBe(b.snapshot?.project.directory);
+  expect(
+    calls()
+      .map((call) => call.cwd)
+      .sort(),
+  ).toEqual([a.workspace!.directory, b.workspace!.directory].sort());
+  expect(store.getTask(third.id).status).toBe("stopped");
+  expect(fs.readFileSync(path.join(repository, "unfinished.txt"), "utf8")).toBe(
+    "keep user work",
+  );
+  expect(git("branch", "--show-current")).toBe("main");
+  expect(opened).toEqual([]);
+});
+
+test("stopping one parallel repair does not cancel its sibling", async () => {
+  configure({ delay: 1500 });
+  const make = () =>
+    create({
+      kind: "bug",
+      workspaceMode: "isolated",
+      branch: { mode: "existing", base: "main", name: "main", version: "" },
+    });
+  const first = make(),
+    second = make();
+  await service.action(first.id, "fix");
+  await service.action(second.id, "fix");
+  await until(() => calls().length === 2);
+  await service.action(first.id, "stop");
+  await status(second.id, "waiting-review");
+  await until(
+    () => store.getTask(first.id).status === "stopped" && !service.busy,
+  );
+  expect(store.getTask(second.id).error).toBeUndefined();
+  expect(store.getTask(first.id).snapshot?.project.directory).not.toBe(
+    repository,
+  );
+});
+
+test("a Bug cancelled while queued can retry its original direct-repair intent without a plan", async () => {
+  const settings = store.settings();
+  settings.execution = { concurrency: 1, previewMode: "single" };
+  service.saveSettings(settings);
+  configure({ delay: 1000 });
+  const make = () =>
+    create({
+      kind: "bug",
+      workspaceMode: "isolated",
+      branch: { mode: "existing", base: "main", name: "main", version: "" },
+    });
+  const first = make(),
+    queued = make();
+  await service.action(first.id, "fix");
+  expect((await service.action(queued.id, "fix")).status).toBe("queued");
+  await service.action(queued.id, "stop");
+  await status(first.id, "waiting-review");
+  configure({});
+  expect(store.getTask(queued.id).snapshot).toBeUndefined();
+  await service.action(queued.id, "retry");
+  const repaired = await status(queued.id, "waiting-review");
+  expect(repaired.snapshot?.directFix).toBe(true);
+  expect(repaired.workspace).toBeDefined();
+});
+
+test("an unauthenticated CLI returns a login remedy before sending any development prompt", async () => {
+  configure({ loggedOut: true });
+  const task = create({ kind: "bug" });
+  await service.action(task.id, "fix");
+  const failed = await status(task.id, "failed");
+  expect(failed.error).toContain("codex login");
+  expect(calls()).toEqual([]);
+  configure({});
+  await service.action(task.id, "retry");
+  await status(task.id, "waiting-review");
+  expect(calls().map((call) => call.stage)).toEqual(["development"]);
+});
+
+test("manual browser review preserves the frozen workspace and does not manufacture acceptance", async () => {
+  const task = create({
+    kind: "bug",
+    workspaceMode: "isolated",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+  });
+  await service.action(task.id, "fix");
+  const waiting = await status(task.id, "waiting-review");
+  await service.openTarget(task.id, true);
+  expect(openingContexts).toEqual([{ external: true }]);
+  expect(store.getTask(task.id).status).toBe("waiting-review");
+  expect(store.getTask(task.id).snapshot).toEqual(waiting.snapshot);
+  expect(store.getTask(task.id).delivery).toBeUndefined();
 });
 
 test("bug screenshots persist with the draft, reach assessment, and removal invalidates the previous plan", async () => {
@@ -324,9 +441,7 @@ test("bug fix with runtime-only unexecuted checks waits for manual review instea
     "unexecuted",
   ]);
   expect(
-    fixed.logs.some((log) =>
-      log.message.includes("运行时检查等待人工验证"),
-    ),
+    fixed.logs.some((log) => log.message.includes("运行时检查等待人工验证")),
   ).toBe(true);
 });
 
@@ -620,14 +735,13 @@ test("active assessment prevents duplicate work and settings changes; stop and r
   await service.action(task.id, "analyze");
   await until(() => calls().length === 1);
   await expect(service.action(task.id, "analyze")).rejects.toThrow();
-  expect(() => service.saveSettings(store.settings())).toThrow(/任务执行中/);
+  expect(() => service.saveSettings(store.settings())).toThrow(/任务执行.*中/);
   const second = create({
     title: "Second isolated task",
     branch: { mode: "existing", base: "main", name: "", version: "" },
   });
-  await expect(service.action(second.id, "analyze")).rejects.toThrow(
-    /已有任务/,
-  );
+  expect((await service.action(second.id, "analyze")).status).toBe("queued");
+  await service.action(second.id, "stop");
   await service.action(task.id, "stop");
   await until(() =>
     store
@@ -860,8 +974,10 @@ test("explicit repair uses the frozen branch and failed evidence, then retests e
   const failed = await status(task.id, "failed");
   configure({});
   await service.action(task.id, "repair");
-  // This fixture intentionally has no server.cjs: successful repair + retesting
-  // must reach startup, then truthfully fail instead of claiming delivery.
+  // Checks complete without opening a server until the user requests runtime review.
+  await status(task.id, "waiting-review");
+  expect(opened).toEqual([]);
+  await service.action(task.id, "start");
   const repaired = await status(task.id, "failed");
   expect(repaired.stage).toBe("startup");
   expect(calls().map((call) => call.stage)).toEqual([
@@ -912,6 +1028,9 @@ test("successful case evidence and actual HTTP readiness precede opening the pre
   store.saveSettings(settings);
   const task = await developed();
   await service.action(task.id, "test");
+  await status(task.id, "waiting-review");
+  expect(opened).toEqual([]);
+  await service.action(task.id, "start");
   const review = await status(task.id, "review");
   expect(review.checks).toEqual(
     expect.arrayContaining([
@@ -967,6 +1086,8 @@ test("a second task replaces the service-owned server for the same project and U
   service.saveSettings(settings);
   const first = await developed();
   await service.action(first.id, "test");
+  await status(first.id, "waiting-review");
+  await service.action(first.id, "start");
   await status(first.id, "review");
   const firstServer = (await (await fetch(url)).json()) as { pid: number };
   const second = create({
@@ -982,6 +1103,8 @@ test("a second task replaces the service-owned server for the same project and U
   await service.action(second.id, "analyze");
   await status(second.id, "ready");
   await service.action(second.id, "develop");
+  await status(second.id, "waiting-review");
+  await service.action(second.id, "start");
   const reviewed = await status(second.id, "review");
   const secondServer = (await (await fetch(url)).json()) as { pid: number };
   expect(secondServer.pid).not.toBe(firstServer.pid);
@@ -990,6 +1113,9 @@ test("a second task replaces the service-owned server for the same project and U
   );
   expect(opened).toEqual([url, url]);
   expect(reviewed.runtime?.targetUrl).toBe(url);
+  await expect(service.openTarget(first.id, true)).rejects.toThrow(
+    "另一个任务",
+  );
 });
 
 test("an unrelated HTTP responder blocks startup without killing it or opening the wrong page", async () => {
@@ -1009,6 +1135,8 @@ test("an unrelated HTTP responder blocks startup without killing it or opening t
     service.saveSettings(settings);
     const task = await developed();
     await service.action(task.id, "test");
+    await status(task.id, "waiting-review");
+    await service.action(task.id, "start");
     const failed = await status(task.id, "failed");
     expect(failed.stage).toBe("startup");
     expect(failed.error).toContain("目标地址已有服务响应");
@@ -1030,6 +1158,8 @@ test("startup retry adopts corrected runtime settings while preserving the froze
   service.saveSettings(settings);
   const task = await developed();
   await service.action(task.id, "test");
+  await status(task.id, "waiting-review");
+  await service.action(task.id, "start");
   const failed = await status(task.id, "failed");
   expect(failed.stage).toBe("startup");
   expect(failed.error).toContain("start:missing");

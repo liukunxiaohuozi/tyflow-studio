@@ -57,13 +57,16 @@ export function executablePath(
     );
   return [...new Set(directories.filter(Boolean))].join(separator);
 }
-export function which(name: string): string | undefined {
-  return findCommands(name)[0];
+export function which(name: string, searchPath?: string): string | undefined {
+  return findCommands(name, searchPath)[0];
 }
-export function findCommands(name: string): string[] {
+export function findCommands(
+  name: string,
+  searchPath = executablePath(),
+): string[] {
   if (path.isAbsolute(name)) return fs.existsSync(name) ? [name] : [];
   const matches: string[] = [];
-  const directories = (process.env.PATH ?? "").split(path.delimiter);
+  const directories = searchPath.split(path.delimiter);
   if (process.platform === "darwin")
     directories.push(
       "/opt/homebrew/bin",
@@ -83,8 +86,12 @@ export function findCommands(name: string): string[] {
     }
   return [...new Set(matches)];
 }
-export function resolveCommand(command: string): Command {
-  const executable = which(command);
+export function resolveCommand(
+  command: string,
+  preferredCommand = "",
+): Command {
+  const searchPath = executablePath(preferredCommand);
+  const executable = which(command, searchPath);
   if (!executable)
     throw new Error(`找不到命令 ${command}，请在开发配置中填写可执行文件路径`);
   if (/\.(cmd|bat|ps1)$/i.test(executable)) {
@@ -101,21 +108,40 @@ export function resolveCommand(command: string): Command {
         "codex.js",
       ),
       npm: path.join(dir, "node_modules", "npm", "bin", "npm-cli.js"),
+      pnpm: path.join(dir, "node_modules", "pnpm", "bin", "pnpm.cjs"),
+      yarn: path.join(dir, "node_modules", "yarn", "bin", "yarn.js"),
     };
-    const js = known[base];
-    const node = which("node");
+    const js = [
+      known[base],
+      ...(["pnpm", "yarn"].includes(base)
+        ? [path.join(dir, "node_modules", "corepack", "dist", `${base}.js`)]
+        : []),
+    ].find((candidate) => candidate && fs.existsSync(candidate));
+    const node = which("node", searchPath);
     if (js && node && fs.existsSync(js))
-      return { executable: node, args: [js] };
+      return {
+        executable: node,
+        args: [js],
+        ...(preferredCommand ? { env: { PATH: searchPath } } : {}),
+      };
     throw new Error(
       "请选择原生可执行文件，或受支持的 codex / npm 命令；不执行任意 shell 脚本",
     );
   }
   if (/\.m?js$/i.test(executable)) {
-    const node = which("node");
+    const node = which("node", searchPath);
     if (!node) throw new Error("请安装 Node.js");
-    return { executable: node, args: [executable] };
+    return {
+      executable: node,
+      args: [executable],
+      ...(preferredCommand ? { env: { PATH: searchPath } } : {}),
+    };
   }
-  return { executable, args: [] };
+  return {
+    executable,
+    args: [],
+    ...(preferredCommand ? { env: { PATH: searchPath } } : {}),
+  };
 }
 export function killTree(child: ChildProcess) {
   if (!child.pid) return;

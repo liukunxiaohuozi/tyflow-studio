@@ -1,5 +1,6 @@
 export type TaskKind = "design" | "text" | "bug";
 export type TaskStatus =
+  | "queued"
   | "draft"
   | "analyzing"
   | "ready"
@@ -26,6 +27,13 @@ export interface Project {
   defaultBranchMode: "new" | "existing";
 }
 export interface Settings {
+  execution?: { concurrency: number; previewMode: "single" | "multiple" };
+  updates?: {
+    manifestUrl: string;
+    githubRepository: string;
+    checkOnLaunch: boolean;
+    hasSecret?: boolean;
+  };
   developer: { name: string; email: string; defaultProject: string };
   projects: Project[];
   agent: { command: string; tyflowDirectory: string; testSkill: string };
@@ -112,6 +120,7 @@ export interface BranchConfig {
   version: string;
 }
 export interface TaskInput {
+  workspaceMode?: "isolated" | "current";
   title: string;
   kind: TaskKind;
   size: "small" | "medium" | "large";
@@ -205,6 +214,14 @@ export interface AssetDiff {
   unchanged: number;
 }
 export interface Task extends TaskInput {
+  executionIntent?: { directFix: boolean; forceTests: boolean };
+  workspace?: {
+    directory: string;
+    sourceDirectory: string;
+    branch: string;
+    baseCommit: string;
+  };
+  queued?: { action: TaskAction; at: string };
   runtime?: { startScript: string; targetUrl: string };
   runs?: RunRecord[];
   id: string;
@@ -291,6 +308,29 @@ export interface EnvironmentInfo {
   testSkillAvailable: boolean;
   credentialStorage: boolean;
 }
+export interface SetupCheck {
+  id: string;
+  name: string;
+  state: "passed" | "failed" | "warning";
+  detail: string;
+  remedy?: string;
+}
+export interface UpdateInfo {
+  status:
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "current"
+    | "failed";
+  currentVersion: string;
+  version?: string;
+  progress?: number;
+  notes?: string;
+  error?: string;
+  previousAvailable?: boolean;
+}
 export interface Bootstrap {
   settings: Settings;
   tasks: Task[];
@@ -309,6 +349,12 @@ export type TaskAction =
   | "accept"
   | "retry";
 export interface StudioAPI {
+  openWorkspace?(id: string): Promise<void>;
+  setupChecks?(projectId?: string): Promise<SetupCheck[]>;
+  updateStatus?(): Promise<UpdateInfo>;
+  checkUpdate?(): Promise<UpdateInfo>;
+  downloadUpdate?(): Promise<UpdateInfo>;
+  activateUpdate?(rollback?: boolean): Promise<void>;
   compareDesigns(beforeId: string, afterId: string): Promise<AssetDiff>;
   bootstrap(): Promise<Bootstrap>;
   saveSettings(settings: SettingsInput): Promise<Settings>;
@@ -338,7 +384,7 @@ export interface StudioAPI {
       supplement?: { text?: string; assetIds?: string[] };
     },
   ): Promise<Task>;
-  openTarget(id: string): Promise<void>;
+  openTarget(id: string, external?: boolean): Promise<void>;
   exportTask(id: string): Promise<string | null>;
   onTask(callback: (task: Task) => void): () => void;
 }

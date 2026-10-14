@@ -20,16 +20,29 @@ import { StudioService } from "./service";
 import { redact, validateTaskInput } from "./validation";
 import { normalizeScreenshot, screenshotThumbnail } from "./images";
 import { notificationForTransition } from "./notifications";
+import { setupChecks } from "./setup";
+import { UpdateManager } from "./updates";
+import packageInfo from "../../package.json";
 
 let main: BrowserWindow | undefined;
+let verificationWindow: BrowserWindow | undefined;
 let service: StudioService | undefined;
+let updater: UpdateManager | undefined;
+let activating = false;
+function redactChecks(checks: import("../shared/contracts").SetupCheck[]) {
+  return checks.map((check) => ({ ...check, detail: redact(check.detail) }));
+}
 let bootstrapServed = false;
 const taskStatuses = new Map<
   string,
   import("../shared/contracts").TaskStatus
 >();
 if (process.platform === "win32") app.setAppUserModelId("com.tyflow.studio");
-if (process.env.STUDIO_TEST_DATA && process.env.STUDIO_SMOKE === "1")
+if (
+  process.env.STUDIO_TEST_DATA &&
+  (process.env.STUDIO_SMOKE === "1" ||
+    (process.env.STUDIO_UI_TEST === "1" && !app.isPackaged))
+)
   app.setPath("userData", path.resolve(process.env.STUDIO_TEST_DATA));
 else {
   const current = app.getPath("userData");
@@ -163,6 +176,57 @@ async function preview(id: string, page?: string) {
   await win.loadFile(file);
 }
 function bind() {
+  handle("open-workspace", async (id) => {
+    const task = service!.store.getTask(uuid.parse(id));
+    const directory =
+      task.workspace?.directory ?? task.snapshot?.project.directory;
+    if (!directory || !fs.existsSync(directory))
+      throw new Error("任务工作目录不存在");
+    const error = await shell.openPath(directory);
+    if (error) throw new Error(error);
+  });
+  handle("setup-checks", async (id) =>
+    redactChecks(
+      await setupChecks(
+        service!.settings(),
+        service!.store.directory,
+        id === undefined ? undefined : z.string().max(60).parse(id),
+      ),
+    ),
+  );
+  handle("update-status", () => updater!.status());
+  handle("update-check", () =>
+    activating
+      ? Promise.reject(new Error("正在启用更新，请稍后重试"))
+      : updater!.check(),
+  );
+  handle("update-download", () =>
+    activating
+      ? Promise.reject(new Error("正在启用更新，请稍后重试"))
+      : updater!.download(),
+  );
+  handle("update-activate", async (rollback) => {
+    if (!app.isPackaged)
+      throw new Error("开发模式请重新构建；客户端更新仅用于已打包应用");
+    if (service!.busy || activating)
+      throw new Error("请先完成或停止执行和排队中的任务，再启用更新");
+    activating = true;
+    try {
+      const installed = await updater!.prepareActivation(
+        z.boolean().optional().parse(rollback) ?? false,
+      );
+      if (service!.busy) throw new Error("有任务开始执行，请稍后启用更新");
+      updater!.select(installed);
+      app.relaunch({
+        execPath: installed.executable,
+        args: process.argv.slice(1),
+      });
+      service!.close();
+      app.quit();
+    } finally {
+      activating = false;
+    }
+  });
   handle("compare-designs", (before, after) =>
     service!.assets.compareDesigns(uuid.parse(before), uuid.parse(after)),
   );
@@ -170,7 +234,10 @@ function bind() {
     bootstrapServed = true;
     return service!.bootstrap();
   });
-  handle("settings", (value) => service!.saveSettings(value as never));
+  handle("settings", (value) => {
+    if (activating) throw new Error("正在启用更新，请稍后保存配置");
+    return service!.saveSettings(value as never);
+  });
   handle("directory", async () => {
     const result = await dialog.showOpenDialog(main!, {
       properties: ["openDirectory"],
@@ -251,41 +318,46 @@ function bind() {
     ),
   );
   handle("action", (id, action, options) =>
-    service!.action(
-      uuid.parse(id),
-      z
-        .enum([
-          "repair",
-          "fix",
-          "analyze",
-          "develop",
-          "test",
-          "start",
-          "stop",
-          "terminate",
-          "accept",
-          "retry",
-        ])
-        .parse(action),
-      options === undefined
-        ? undefined
-        : z
-            .object({
-              planFeedback: z.string().trim().min(1).max(8000).optional(),
-              allowDirty: z.boolean().optional(),
-              supplement: z
+    activating
+      ? Promise.reject(new Error("正在启用客户端更新，请稍后执行任务"))
+      : service!.action(
+          uuid.parse(id),
+          z
+            .enum([
+              "repair",
+              "fix",
+              "analyze",
+              "develop",
+              "test",
+              "start",
+              "pause",
+              "stop",
+              "terminate",
+              "accept",
+              "retry",
+            ])
+            .parse(action),
+          options === undefined
+            ? undefined
+            : z
                 .object({
-                  text: z.string().trim().max(8000).optional(),
-                  assetIds: z.array(uuid).max(30).optional(),
+                  planFeedback: z.string().trim().min(1).max(8000).optional(),
+                  allowDirty: z.boolean().optional(),
+                  supplement: z
+                    .object({
+                      text: z.string().trim().max(8000).optional(),
+                      assetIds: z.array(uuid).max(30).optional(),
+                    })
+                    .strict()
+                    .optional(),
                 })
                 .strict()
-                .optional(),
-            })
-            .strict()
-            .parse(options),
-    ),
+                .parse(options),
+        ),
   );
-  handle("open-target", (id) => service!.openTarget(uuid.parse(id)));
+  handle("open-target", (id, external) =>
+    service!.openTarget(uuid.parse(id), z.boolean().optional().parse(external)),
+  );
   handle("export", async (id) => {
     const task = service!.store.getTask(uuid.parse(id));
     const result = await dialog.showSaveDialog(main!, {
@@ -320,13 +392,15 @@ async function createWindow() {
   main.once("ready-to-show", () => main?.show());
   main.on("closed", () => {
     main = undefined;
+    if (verificationWindow && !verificationWindow.isDestroyed())
+      verificationWindow.close();
   });
   if (devUrl) await main.loadURL(devUrl);
   else await main.loadFile(path.join(__dirname, "../renderer/index.html"));
   // Windows can honor SW_HIDE for the first show() after a hidden launch.
   // Loading and first paint are independent opportunities to reveal the window.
   main.show();
-  if (process.env.STUDIO_SMOKE === "1") {
+  if (process.env.STUDIO_SMOKE === "1" && process.env.STUDIO_UI_TEST !== "1") {
     const report = {
       ready: true,
       title: main.getTitle(),
@@ -410,6 +484,24 @@ else {
         store.saveSettings(settings);
       }
       const vault = new Vault(store.directory);
+      updater = new UpdateManager({
+        directory: store.directory,
+        version: packageInfo.version,
+        platform: process.platform,
+        arch: process.arch,
+        executable: process.execPath,
+        settings: () => store.settings(),
+        secret: () => vault.get("updates"),
+      });
+      const preferred =
+        app.isPackaged && process.env.STUDIO_SMOKE !== "1"
+          ? updater.preferredExecutable()
+          : undefined;
+      if (preferred) {
+        app.relaunch({ execPath: preferred, args: process.argv.slice(1) });
+        app.quit();
+        return;
+      }
       service = new StudioService(
         store,
         vault,
@@ -453,10 +545,56 @@ else {
             }
           }
         },
-        (url) => shell.openExternal(url),
+        async (url, context) => {
+          if (!context || context.external) {
+            await shell.openExternal(url);
+            return;
+          }
+          const origin = new URL(url).origin;
+          if (!verificationWindow || verificationWindow.isDestroyed()) {
+            verificationWindow = new BrowserWindow({
+              width: 1280,
+              height: 900,
+              webPreferences: {
+                sandbox: true,
+                contextIsolation: true,
+                nodeIntegration: false,
+                webSecurity: true,
+                partition: "persist:task-verification",
+              },
+            });
+            verificationWindow.on("closed", () => {
+              verificationWindow = undefined;
+            });
+          }
+          const win = verificationWindow;
+          win.webContents.removeAllListeners("will-navigate");
+          windowSecurity(win, (next) => {
+            try {
+              return new URL(next).origin === origin;
+            } catch {
+              return false;
+            }
+          });
+          const title = `${context?.title ?? "项目验证"} · ${context?.branch ?? ""} · TingYun Studio`;
+          win.removeAllListeners("page-title-updated");
+          win.on("page-title-updated", (event) => {
+            event.preventDefault();
+            win.setTitle(title);
+          });
+          win.setTitle(title);
+          await win.loadURL(url);
+          win.show();
+          win.focus();
+        },
       );
       bind();
       await createWindow();
+      if (
+        store.settings().updates?.checkOnLaunch &&
+        process.env.STUDIO_SMOKE !== "1"
+      )
+        void updater.check();
     })
     .catch((error) => {
       if (process.env.STUDIO_SMOKE === "1") {

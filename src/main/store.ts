@@ -10,6 +10,12 @@ export function initialSettings(resourcesPath?: string): Settings {
   const home = os.homedir();
   const agentPaths = defaultAgentPaths(home, resourcesPath);
   return {
+    execution: { concurrency: 2, previewMode: "single" },
+    updates: {
+      manifestUrl: "",
+      githubRepository: "liukunxiaohuozi/tyflow-studio",
+      checkOnLaunch: true,
+    },
     developer: { name: "", email: "", defaultProject: "explore" },
     projects: ["explore", "o11y-apm-ui"].map((id) => ({
       id,
@@ -77,9 +83,12 @@ export class Store {
         !this.state.settings
       )
         throw new Error("Unsupported or corrupt state file: " + this.file);
-      this.state.settings.notifications ??=
-        initialSettings(options.resourcesPath).notifications;
+      this.state.settings.notifications ??= initialSettings(
+        options.resourcesPath,
+      ).notifications;
       this.state.settings.zentao.mappings ??= {};
+      this.state.settings.execution ??= initialSettings().execution;
+      this.state.settings.updates ??= initialSettings().updates;
     } else
       this.state = {
         schemaVersion: 1,
@@ -87,11 +96,29 @@ export class Store {
         tasks: [],
       };
     let changed = false;
+    const bundled = defaultAgentPaths(os.homedir(), options.resourcesPath);
+    if (options.resourcesPath) {
+      const agent = this.state.settings.agent;
+      for (const key of ["tyflowDirectory", "testSkill"] as const) {
+        const old = agent[key].replace(/\\/g, "/");
+        if (
+          /\/bundle\/(tyflow|skills\/frontend-test\/SKILL\.md)$/.test(old) &&
+          fs.existsSync(bundled[key]) &&
+          agent[key] !== bundled[key]
+        ) {
+          agent[key] = bundled[key];
+          changed = true;
+        }
+      }
+    }
     for (const task of this.state.tasks)
       if (
-        ["analyzing", "developing", "testing", "starting"].includes(task.status)
+        ["queued", "analyzing", "developing", "testing", "starting"].includes(
+          task.status,
+        )
       ) {
         task.status = "stopped";
+        task.queued = undefined;
         task.error = "客户端关闭导致任务中断，请查看日志后重试。";
         changed = true;
       }
@@ -132,9 +159,14 @@ export class Store {
       const previous = this.getTask(id);
       if (
         previous.snapshot ||
-        ["analyzing", "developing", "testing", "starting", "accepted"].includes(
-          previous.status,
-        )
+        [
+          "queued",
+          "analyzing",
+          "developing",
+          "testing",
+          "starting",
+          "accepted",
+        ].includes(previous.status)
       )
         throw new Error("执行快照已冻结，请新建后续任务");
       const sourceChanged =
@@ -143,6 +175,8 @@ export class Store {
             JSON.stringify(input[k as keyof TaskInput]) !==
             JSON.stringify(previous[k as keyof TaskInput]),
         ) ||
+        (input.workspaceMode ?? "current") !==
+          (previous.workspaceMode ?? "current") ||
         ["mode", "base", "version"].some(
           (k) =>
             input.branch[k as keyof typeof input.branch] !==

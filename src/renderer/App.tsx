@@ -72,13 +72,39 @@ const previewBootstrap: Bootstrap = {
 export default function App() {
   const [data, setData] = useState<Bootstrap>();
   const [loadError, setLoadError] = useState("");
-  const [view, setView] = useState<"task" | "records" | "settings">("task");
+  const [view, setView] = useState<"task" | "records" | "project" | "settings">(
+    "task",
+  );
+  const [projectContext, setProjectContext] = useState<string>();
+  const [newProjectId, setNewProjectId] = useState<string>();
   const [selected, setSelected] = useState<string>();
   const [newKey, setNewKey] = useState(0);
   const [edit, setEdit] = useState(false);
   const [demo, setDemo] = useState(false);
   const [toast, setToast] = useState<{ message: string; error: boolean }>();
   const [settingsTab, setSettingsTab] = useState("developer");
+  const [availableUpdate, setAvailableUpdate] = useState<string>();
+  useEffect(() => {
+    let live = true;
+    const poll = () =>
+      window.studio
+        ?.updateStatus?.()
+        .then((info) => {
+          if (live)
+            setAvailableUpdate(
+              ["available", "downloaded"].includes(info.status)
+                ? info.version
+                : undefined,
+            );
+        })
+        .catch(() => {});
+    void poll();
+    const timer = setInterval(() => void poll(), 10_000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, []);
   const report = useCallback(
     (message: string, error = false) => setToast({ message, error }),
     [],
@@ -125,6 +151,13 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [toast]);
   function create() {
+    setNewProjectId(
+      view === "project"
+        ? projectContext
+        : view === "task"
+          ? current?.projectId || newProjectId
+          : undefined,
+    );
     setDemo(false);
     setSelected(undefined);
     setEdit(false);
@@ -132,12 +165,14 @@ export default function App() {
     setView("task");
   }
   function openTask(task: Task) {
+    setProjectContext(task.projectId);
     setDemo(false);
     setSelected(task.id);
     setEdit(false);
     setView("task");
   }
   function taskResult(task: Task) {
+    setProjectContext(task.projectId);
     updateTask(task);
     setSelected(task.id);
     if (activeStatuses.includes(task.status)) setEdit(false);
@@ -178,6 +213,9 @@ export default function App() {
       </div>
     );
   const current = data.tasks.find((t) => t.id === selected);
+  const scopedProject = data.settings.projects.find(
+    (p) => p.id === projectContext,
+  );
   const runningCount = data.tasks.filter((t) =>
     activeStatuses.includes(t.status),
   ).length;
@@ -185,6 +223,7 @@ export default function App() {
     current &&
     (current.snapshot ||
       [
+        "queued",
         "developing",
         "waiting-test",
         "waiting-review",
@@ -214,6 +253,9 @@ export default function App() {
             className={view === "task" ? "selected" : ""}
             onClick={() => {
               setDemo(false);
+              setProjectContext(undefined);
+              if (view === "project") create();
+              if (view === "project") setNewProjectId(undefined);
               setView("task");
             }}
           >
@@ -242,17 +284,38 @@ export default function App() {
           {data.settings.projects.map((p) => (
             <button
               key={p.id}
+              className={
+                !demo && view === "project" && projectContext === p.id
+                  ? "selected"
+                  : ""
+              }
+              aria-current={
+                !demo && view === "project" && projectContext === p.id
+                  ? "page"
+                  : undefined
+              }
               title={p.directory || p.name}
               onClick={() => {
                 setDemo(false);
-                setView("settings");
-                setSettingsTab("developer");
+                setProjectContext(p.id);
+                setView("project");
               }}
             >
               <FolderGit2 size={16} />
               <span>{p.name}</span>
               <span
                 className={`project-dot ${p.directory ? "configured" : ""}`}
+                title={
+                  p.directory
+                    ? I18nT(
+                        "已配置本地目录，非运行状态",
+                        "Local directory configured; not a running status",
+                      )
+                    : I18nT(
+                        "尚未配置本地目录",
+                        "Local directory not configured",
+                      )
+                }
               />
             </button>
           ))}
@@ -322,13 +385,48 @@ export default function App() {
               ? "task-intake"
               : view === "task" && showRun
                 ? "compact-workspace run-workspace"
-                : view === "records" || view === "settings"
+                : view === "records" ||
+                    view === "project" ||
+                    view === "settings"
                   ? "compact-workspace"
                   : undefined
           }
         >
           <div className="content">
             <div>
+              {availableUpdate && (
+                <Notice>
+                  {I18nT(
+                    "有新客户端版本可用",
+                    "A new Studio version is available",
+                  )}{" "}
+                  · {availableUpdate}{" "}
+                  <button
+                    onClick={() => {
+                      setSettingsTab("updates");
+                      setView("settings");
+                    }}
+                  >
+                    {I18nT("查看更新", "View update")}
+                  </button>
+                </Notice>
+              )}
+              {window.studio && data.tasks.length === 0 && view === "task" && (
+                <Notice>
+                  {I18nT(
+                    "首次使用建议先完成本地执行体检，再开始任务。",
+                    "Run setup checks before your first task.",
+                  )}{" "}
+                  <button
+                    onClick={() => {
+                      setSettingsTab("runtime");
+                      setView("settings");
+                    }}
+                  >
+                    {I18nT("开始体检", "Check setup")}
+                  </button>
+                </Notice>
+              )}
               {!window.studio && (
                 <Notice>
                   <strong>
@@ -353,6 +451,7 @@ export default function App() {
                   <TaskEditor
                     key={selected || `new-${newKey}`}
                     task={current}
+                    defaultProjectId={newProjectId}
                     settings={data.settings}
                     onTask={taskResult}
                     report={report}
@@ -366,6 +465,20 @@ export default function App() {
                   settings={data.settings}
                   open={openTask}
                   create={create}
+                />
+              )}
+              {view === "project" && scopedProject && (
+                <Records
+                  key={`project-${scopedProject.id}`}
+                  projectScope={scopedProject}
+                  tasks={data.tasks}
+                  settings={data.settings}
+                  open={openTask}
+                  create={create}
+                  configure={() => {
+                    setSettingsTab("developer");
+                    setView("settings");
+                  }}
                 />
               )}
               {view === "settings" && (
@@ -420,7 +533,10 @@ export default function App() {
           className="demo-video-backdrop"
           role="dialog"
           aria-modal="true"
-          aria-label={I18nT("TingYun Studio 演示视频", "TingYun Studio demo video")}
+          aria-label={I18nT(
+            "TingYun Studio 演示视频",
+            "TingYun Studio demo video",
+          )}
         >
           <div className="demo-video-dialog">
             <button
