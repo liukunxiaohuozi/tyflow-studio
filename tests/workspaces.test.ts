@@ -133,6 +133,20 @@ test("workspace retries accept a source path alias to the same Git common direct
     fs.readFileSync(path.join(first.directory, "source.txt"), "utf8"),
   ).toBe("keep alias retry changes");
 });
+
+(process.platform === "win32" ? test : test.skip)(
+  "Windows workspace retries accept a differently cased source directory",
+  async () => {
+    const project = {
+      ...initialSettings().projects[0],
+      directory: repository.toUpperCase(),
+    };
+    const input = task(),
+      signal = new AbortController().signal;
+    const first = await prepareWorkspace(project, input, root, signal);
+    expect(await prepareWorkspace(project, input, root, signal)).toEqual(first);
+  },
+);
 test("restarting converts interrupted and queued tasks into explicit resumable states", () => {
   const store = new Store(path.join(root, "data")),
     active = task(),

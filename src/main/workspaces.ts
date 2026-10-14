@@ -20,7 +20,7 @@ export async function prepareWorkspace(
     task.branch.mode === "new" ? task.branch.name : `studio/task-${task.id}`;
   if (fs.existsSync(directory)) {
     const common = async (cwd: string) =>
-      fs.realpathSync(
+      fs.realpathSync.native(
         path.resolve(
           cwd,
           (
