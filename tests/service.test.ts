@@ -255,7 +255,11 @@ test("two isolated Bug repairs execute separately while a third queues; stopping
     calls()
       .map((call) => call.cwd)
       .sort(),
-  ).toEqual([a.workspace!.directory, b.workspace!.directory].sort());
+  ).toEqual(
+    [a.workspace!.directory, b.workspace!.directory]
+      .map((directory) => fs.realpathSync(directory))
+      .sort(),
+  );
   expect(store.getTask(third.id).status).toBe("stopped");
   expect(fs.readFileSync(path.join(repository, "unfinished.txt"), "utf8")).toBe(
     "keep user work",
@@ -460,7 +464,7 @@ test("assessment invokes read-only Codex, passes schema and exact target commit,
       "-",
     ]),
   );
-  expect(invocation.cwd).toBe(repository);
+  expect(invocation.cwd).toBe(fs.realpathSync(repository));
   expect(invocation.schema.properties).toHaveProperty("testCases");
   expect(invocation.prompt).toContain(git("rev-parse", "HEAD"));
   expect(task.targetCommit).toBe(git("rev-parse", "HEAD"));

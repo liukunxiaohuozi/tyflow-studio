@@ -20,15 +20,17 @@ export async function prepareWorkspace(
     task.branch.mode === "new" ? task.branch.name : `studio/task-${task.id}`;
   if (fs.existsSync(directory)) {
     const common = async (cwd: string) =>
-      path.resolve(
-        cwd,
-        (
-          await runCommand(
-            resolveCommand("git"),
-            ["rev-parse", "--git-common-dir"],
-            { cwd, signal },
-          )
-        ).trim(),
+      fs.realpathSync(
+        path.resolve(
+          cwd,
+          (
+            await runCommand(
+              resolveCommand("git"),
+              ["rev-parse", "--git-common-dir"],
+              { cwd, signal },
+            )
+          ).trim(),
+        ),
       );
     const info = await inspectRepository(directory);
     if (

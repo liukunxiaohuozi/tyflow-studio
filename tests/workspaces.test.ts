@@ -112,6 +112,27 @@ test("retries reuse the same workspace but refuse an unrelated replacement repos
     fs.readFileSync(path.join(first.directory, "source.txt"), "utf8"),
   ).toBe("keep retry changes");
 });
+
+test("workspace retries accept a source path alias to the same Git common directory", async () => {
+  const alias = path.join(root, "source-alias");
+  fs.symlinkSync(
+    repository,
+    alias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const project = { ...initialSettings().projects[0], directory: alias };
+  const input = task(),
+    signal = new AbortController().signal;
+  const first = await prepareWorkspace(project, input, root, signal);
+  fs.writeFileSync(
+    path.join(first.directory, "source.txt"),
+    "keep alias retry changes",
+  );
+  expect(await prepareWorkspace(project, input, root, signal)).toEqual(first);
+  expect(
+    fs.readFileSync(path.join(first.directory, "source.txt"), "utf8"),
+  ).toBe("keep alias retry changes");
+});
 test("restarting converts interrupted and queued tasks into explicit resumable states", () => {
   const store = new Store(path.join(root, "data")),
     active = task(),
