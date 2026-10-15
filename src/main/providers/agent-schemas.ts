@@ -1,17 +1,29 @@
 import { z } from "zod";
 const string = { type: "string" };
 const strings = { type: "array", items: string };
+const text = (minLength: number, maxLength: number) => ({
+  type: "string",
+  minLength,
+  maxLength,
+});
+const list = (items: object, minItems: number, maxItems: number) => ({
+  type: "array",
+  items,
+  minItems,
+  maxItems,
+});
+const identifiers = list(text(1, 60), 0, 100);
 const caseSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    id: string,
-    title: string,
-    covers: strings,
-    verifies: strings,
+    id: text(1, 60),
+    title: text(1, 500),
+    covers: identifiers,
+    verifies: identifiers,
     priority: { type: "string", enum: ["P0", "P1", "P2"] },
-    steps: strings,
-    expected: string,
+    steps: list(text(0, 4000), 1, 30),
+    expected: text(1, 4000),
   },
   required: [
     "id",
@@ -27,8 +39,8 @@ const requirementSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    id: string,
-    text: string,
+    id: text(1, 60),
+    text: text(1, 4000),
     priority: { type: "string", enum: ["P0", "P1", "P2"] },
     source: {
       type: "string",
@@ -41,10 +53,14 @@ const planStepSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    id: string,
-    title: string,
-    covers: strings,
-    expectedFiles: strings,
+    id: text(1, 60),
+    title: text(1, 8000),
+    covers: list(text(1, 60), 1, 100),
+    expectedFiles: {
+      ...list(text(1, 500), 1, 100),
+      description:
+        "Real implementation file paths or narrowly scoped globs. Never empty; put pure verification actions in testCases, not in implementation planSteps. Do not invent paths or use a repository-wide wildcard to bypass scope control.",
+    },
   },
   required: ["id", "title", "covers", "expectedFiles"],
 };
@@ -52,13 +68,13 @@ export const planJsonSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    summary: string,
-    requirements: { type: "array", items: requirementSchema },
-    planSteps: { type: "array", items: planStepSchema },
-    steps: strings,
-    risks: strings,
-    testCases: { type: "array", items: caseSchema },
-    blockers: strings,
+    summary: text(1, 16000),
+    requirements: list(requirementSchema, 0, 100),
+    planSteps: { type: "array", items: planStepSchema, maxItems: 100 },
+    steps: list(text(1, 8000), 1, 50),
+    risks: list(text(0, 4000), 0, 50),
+    testCases: { type: "array", items: caseSchema, minItems: 1, maxItems: 100 },
+    blockers: list(text(0, 4000), 0, 30),
   },
   required: [
     "summary",

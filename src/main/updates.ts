@@ -161,11 +161,32 @@ export class UpdateManager {
     } catch {
       /* Credential decryption itself may have failed. */
     }
-    return redact(error instanceof Error ? error.message : String(error), [
-      secret,
-    ]);
+    const message = error instanceof Error ? error.message : String(error);
+    const english = this.options.settings().language === "en-US";
+    // DOMException (AbortSignal.timeout) can cross an Electron/VM realm.
+    const name =
+      error && typeof error === "object" && "name" in error
+        ? String(error.name)
+        : "";
+    if (/TimeoutError|AbortError/.test(name))
+      return english
+        ? "The update request timed out. Check your network or system proxy and try again; the latest version could not be confirmed."
+        : "更新请求超时，请检查网络或系统代理后重试；本次未能确认是否为最新版本。";
+    if (
+      /fetch failed|failed to fetch|net::ERR_|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNREFUSED|terminated|network/i.test(
+        message,
+      )
+    )
+      return english
+        ? "Could not connect to the update server. Check your network, VPN or system proxy and try again; the latest version could not be confirmed."
+        : "暂时无法连接更新服务器，请检查网络、VPN 或系统代理后重试；本次未能确认是否为最新版本。";
+    return redact(message, [secret]);
   }
-  private async request(url: string, accept = "application/json") {
+  private async request(
+    url: string,
+    accept = "application/json",
+    timeout = 30 * 60_000,
+  ) {
     const original = secureUrl(url);
     let next = original;
     for (let redirect = 0; redirect < 6; redirect++) {
@@ -178,7 +199,8 @@ export class UpdateManager {
             : {}),
         },
         redirect: "manual",
-        signal: AbortSignal.timeout(30 * 60_000),
+        credentials: "omit",
+        signal: AbortSignal.timeout(timeout),
       });
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
@@ -189,14 +211,16 @@ export class UpdateManager {
       }
       if (!response.ok) {
         await response.body?.cancel();
-        throw new Error(`更新服务器返回 HTTP ${response.status}`);
+        throw new Error(
+          `更新服务器返回 HTTP ${response.status}${[401, 403, 404].includes(response.status) ? "；请检查更新源、更新 Token、仓库访问权限或服务限流" : ""}`,
+        );
       }
       return response;
     }
     throw new Error("更新服务器重定向过多");
   }
   private async json(url: string, accept?: string) {
-    const response = await this.request(url, accept);
+    const response = await this.request(url, accept, 15_000);
     if (!response.body) throw new Error("更新服务器返回空内容");
     let text = "";
     const decoder = new TextDecoder();
@@ -224,6 +248,21 @@ export class UpdateManager {
         const release = await this.json(
           `https://api.github.com/repos/${repository}/releases/latest`,
         );
+        const tag = z
+          .object({ tag_name: z.string().optional() })
+          .passthrough()
+          .parse(release).tag_name;
+        const publishedVersion = version.safeParse(tag?.replace(/^v/, ""));
+        if (
+          publishedVersion.success &&
+          !newer(publishedVersion.data, this.options.version)
+        ) {
+          this.info = {
+            status: "current",
+            currentVersion: this.options.version,
+          };
+          return this.status();
+        }
         githubAssets = z
           .array(z.object({ name: z.string(), url: z.string().url() }))
           .parse(release.assets);
@@ -237,6 +276,10 @@ export class UpdateManager {
         manifest = await this.json(entry.url, "application/octet-stream");
       }
       const parsed = manifestSchema.parse(manifest);
+      if (!newer(parsed.version, this.options.version)) {
+        this.info = { status: "current", currentVersion: this.options.version };
+        return this.status();
+      }
       const assets = parsed.assets.filter(
         (asset) =>
           asset.platform === this.options.platform &&
@@ -251,11 +294,6 @@ export class UpdateManager {
         asset.url = entry.url;
       }
       secureUrl(asset.url);
-      if (!newer(parsed.version, this.options.version)) {
-        this.candidate = undefined;
-        this.info.status = "current";
-        return this.status();
-      }
       this.candidate = { version: parsed.version, asset };
       this.info = {
         status: "available",

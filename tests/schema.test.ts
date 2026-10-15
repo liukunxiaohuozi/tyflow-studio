@@ -20,6 +20,31 @@ function expectStrictObjects(schema: unknown, location = "root") {
 test.each([
   ["plan", planJsonSchema],
   ["result", resultJsonSchema],
-])("%s output schema requires every declared object property", (_name, schema) => {
-  expectStrictObjects(schema);
+])(
+  "%s output schema requires every declared object property",
+  (_name, schema) => {
+    expectStrictObjects(schema);
+  },
+);
+
+test("plan output schema forbids empty file scopes and empty required steps", () => {
+  const step = planJsonSchema.properties.planSteps.items.properties;
+  expect(step.expectedFiles).toMatchObject({
+    type: "array",
+    minItems: 1,
+    maxItems: 100,
+    items: { type: "string", minLength: 1, maxLength: 500 },
+  });
+  expect(step.covers).toMatchObject({ minItems: 1, maxItems: 100 });
+  expect(planJsonSchema.properties.steps).toMatchObject({
+    minItems: 1,
+    maxItems: 50,
+  });
+  expect(planJsonSchema.properties.testCases).toMatchObject({
+    minItems: 1,
+    maxItems: 100,
+  });
+  expect(
+    planJsonSchema.properties.testCases.items.properties.steps,
+  ).toMatchObject({ minItems: 1, maxItems: 30 });
 });

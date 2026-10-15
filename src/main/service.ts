@@ -25,6 +25,7 @@ import { WorkflowEngine, fingerprint } from "./workflow/engine";
 import { ProviderFailure, failureDetail } from "./workflow/failures";
 import { EvidenceStore } from "./evidence";
 import { CodexAgentProvider, type AgentProvider } from "./providers/agent";
+import { requestPlan } from "./providers/plan";
 import { SkillTestProvider } from "./providers/test";
 import { prepareWorkspace, installWorkspaceDependencies } from "./workspaces";
 import { availablePort } from "./preview";
@@ -1105,19 +1106,23 @@ export class StudioService {
         task.planFeedback,
         settings.agent.tyflowDirectory,
       ),
-      async () =>
-        planSchema.parse(
-          await this.agent(
-            task,
-            "analysis",
-            this.context(task) +
-              (task.plan && task.planFeedback
-                ? `The user is revising the previous assessment. Keep the original requirement intent, but regenerate the implementation plan and test cases to satisfy the feedback. Do not ignore the feedback. Previous plan JSON:\n${JSON.stringify(task.plan)}\nUser feedback on the plan and test cases:\n${task.planFeedback}\n`
-                : "") +
-              `Read-only assessment ONLY; do not modify any files or run write-producing commands. User has not yet approved execution of this particular task. Inspect source and relevant design assets; produce implementation plan and concrete test cases in Chinese. For Bug inputs, do not claim reproduction without evidence; include reproduction first and blockers for missing environment. Selected branch configuration: ${JSON.stringify(task.branch)}. The selected target commit is ${task.targetCommit}. Inspect that exact tree using git show / git ls-tree, even if current checkout differs. Do not assess another revision. Use structured result schema. Include blockers only for information required to proceed.`,
-            planJsonSchema,
-            signal,
-          ),
+      () =>
+        requestPlan(
+          (feedback) =>
+            this.agent(
+              task,
+              "analysis",
+              this.context(task) +
+                (task.plan && task.planFeedback
+                  ? `The user is revising the previous assessment. Keep the original requirement intent, but regenerate the implementation plan and test cases to satisfy the feedback. Do not ignore the feedback. Previous plan JSON:\n${JSON.stringify(task.plan)}\nUser feedback on the plan and test cases:\n${task.planFeedback}\n`
+                  : "") +
+                `Read-only assessment ONLY; do not modify any files or run write-producing commands. User has not yet approved execution of this particular task. Inspect source and relevant design assets; produce implementation plan and concrete test cases in Chinese. For Bug inputs, do not claim reproduction without evidence; include reproduction first and blockers for missing environment. Selected branch configuration: ${JSON.stringify(task.branch)}. The selected target commit is ${task.targetCommit}. Inspect that exact tree using git show / git ls-tree, even if current checkout differs. Do not assess another revision. Use structured result schema. Include blockers only for information required to proceed. Every implementation planStep must declare real non-empty expectedFiles and requirement covers. Put pure verification actions in testCases, not standalone implementation steps with empty file scopes. Never invent paths or use a repository-wide wildcard to bypass scope control.` +
+                feedback,
+              planJsonSchema,
+              signal,
+            ),
+          signal,
+          (message) => this.log(task, "analysis", message),
         ),
     );
     task.plan = normalizePlanTraceability(

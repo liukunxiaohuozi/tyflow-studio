@@ -111,6 +111,8 @@ process.stdin.on("end", () => {
         ],
       },
     };
-    fs.writeFileSync(output, JSON.stringify(config.result || results[stage]));
+    const stageCalls = fs.readFileSync(path.join(directory, "calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((call) => call.stage === stage).length;
+    const sequenceResult = stage === "analysis" && config.analysisResults?.[stageCalls - 1];
+    fs.writeFileSync(output, JSON.stringify(sequenceResult || config.result || results[stage]));
   }, config.delay || 0);
 });

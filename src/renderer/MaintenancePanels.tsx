@@ -64,9 +64,11 @@ export function SetupPanel({ projectId }: { projectId: string }) {
 export function UpdatePanel({
   draft,
   patch,
+  report,
 }: {
   draft: SettingsInput;
   patch: (value: Partial<SettingsInput>) => void;
+  report?: (message: string, error?: boolean) => void;
 }) {
   const defaults = {
     manifestUrl: "",
@@ -100,8 +102,14 @@ export function UpdatePanel({
     setOperation(kind);
     setError("");
     try {
-      if (kind === "check") setInfo(await window.studio?.checkUpdate?.());
-      else if (kind === "download")
+      if (kind === "check") {
+        const result = await window.studio?.checkUpdate?.();
+        setInfo(result);
+        if (result?.status === "current")
+          report?.(I18nT("已是最新版本", "Up to date"));
+        else if (result?.status === "failed" && result.error)
+          report?.(result.error, true);
+      } else if (kind === "download")
         setInfo(await window.studio?.downloadUpdate?.());
       else if (
         window.confirm(

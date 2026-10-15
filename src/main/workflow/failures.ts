@@ -46,7 +46,13 @@ export function failureDetail(
       "当前检查点尚未完成，后续步骤不会继续",
       "已完成检查点会按基线与证据有效性决定是否复用",
     ],
-    recommendedActions: operations[kind],
+    recommendedActions:
+      typed?.code === "AGENT_PLAN_INVALID"
+        ? [
+            "检查提示中具体计划步骤的文件范围或字段",
+            "纯验证动作应放入测试用例；补充实际文件线索后重试此检查点，无需重建任务",
+          ]
+        : operations[kind],
     retryable: typed?.retryable ?? true,
     at: new Date().toISOString(),
   };

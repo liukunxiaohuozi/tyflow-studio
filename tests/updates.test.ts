@@ -79,6 +79,119 @@ test("versions compare numeric components and do not downgrade", () => {
   expect(newer("0.3.0", "0.3.1")).toBe(false);
   expect(newer("0.3.0", "0.3.0")).toBe(false);
 });
+
+test("same GitHub version is current without fetching a manifest or requiring packages", async () => {
+  const settings = initialSettings();
+  settings.updates = {
+    manifestUrl: "",
+    githubRepository: "fixture/studio",
+    checkOnLaunch: true,
+  };
+  const request = jest.fn(
+    async () =>
+      new Response(JSON.stringify({ tag_name: "v0.3.4", assets: [] })),
+  );
+  const manager = new UpdateManager({
+    directory: root,
+    version: "0.3.4",
+    platform: "darwin",
+    arch: "arm64",
+    executable: "fixture",
+    settings: () => settings,
+    secret: () => undefined,
+    fetch: request,
+  });
+  expect((await manager.check()).status).toBe("current");
+  expect((await manager.check()).status).toBe("current");
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+test("equal manifest version needs no matching installable platform", async () => {
+  const transport = jest.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "0.3.0",
+          assets: [
+            {
+              platform: "darwin",
+              arch: "arm64",
+              name: "mac.zip",
+              url: packageUrl,
+              size: 100,
+              sha256: "0".repeat(64),
+            },
+          ],
+        }),
+      ),
+  );
+  expect((await fixture({}, transport).check()).status).toBe("current");
+});
+
+test("transport failure has an actionable message and never falsely claims the latest version", async () => {
+  const manager = fixture({}, async () => {
+    throw new TypeError("fetch failed");
+  });
+  const result = await manager.check();
+  expect(result.status).toBe("failed");
+  expect(result.error).toContain("网络");
+  expect(result.error).not.toBe("fetch failed");
+  expect(result.version).toBeUndefined();
+});
+
+test("checking metadata uses a short timeout rather than the package-download timeout", async () => {
+  const timeout = jest.spyOn(AbortSignal, "timeout");
+  try {
+    await fixture().check();
+    expect(timeout).toHaveBeenCalledWith(15000);
+  } finally {
+    timeout.mockRestore();
+  }
+});
+
+test("permission and timeout failures remain distinct from an up-to-date result", async () => {
+  const denied = await fixture(
+    {},
+    async () => new Response(null, { status: 403 }),
+  ).check();
+  expect(denied.status).toBe("failed");
+  expect(denied.error).toContain("HTTP 403");
+  expect(denied.error).toContain("Token");
+  const timedOut = await fixture({}, async () => {
+    throw new DOMException("The operation timed out", "TimeoutError");
+  }).check();
+  expect(timedOut.status).toBe("failed");
+  expect(timedOut.error).toContain("超时");
+});
+
+test("a failed recheck never reuses a previous successful current result", async () => {
+  let offline = false;
+  const manager = fixture({}, async () => {
+    if (offline) throw new TypeError("fetch failed");
+    return new Response(
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "0.3.0",
+        assets: [
+          {
+            platform: "win32",
+            arch: "x64",
+            name: "studio.zip",
+            url: packageUrl,
+            sha256: "0".repeat(64),
+            size: 100,
+          },
+        ],
+      }),
+    );
+  });
+  expect((await manager.check()).status).toBe("current");
+  offline = true;
+  const result = await manager.check();
+  expect(result.status).toBe("failed");
+  expect(result.error).toContain("未能确认");
+});
 test("downloads a matching package and persists its verified identity across restarts", async () => {
   const manager = fixture();
   expect((await manager.check()).status).toBe("available");

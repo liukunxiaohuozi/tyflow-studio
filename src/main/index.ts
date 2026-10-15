@@ -8,6 +8,7 @@ import {
   shell,
   Menu,
   IpcMainInvokeEvent,
+  net,
 } from "electron";
 import fs from "node:fs";
 import path from "node:path";
@@ -526,6 +527,9 @@ else {
         executable: process.execPath,
         settings: () => store.settings(),
         secret: () => vault.get("updates"),
+        // Use Chromium networking so macOS/Windows system proxies and PAC apply.
+        fetch: (input, init) =>
+          net.fetch(input instanceof Request ? input.url : String(input), init),
       });
       const preferred =
         app.isPackaged && process.env.STUDIO_SMOKE !== "1"

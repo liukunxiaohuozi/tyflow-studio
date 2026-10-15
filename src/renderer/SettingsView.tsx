@@ -319,6 +319,7 @@ export default function SettingsView({
       {tab === "updates" && (
         <UpdatePanel
           draft={draft}
+          report={report}
           patch={(value) => setDraft((previous) => ({ ...previous, ...value }))}
         />
       )}

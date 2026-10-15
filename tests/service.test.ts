@@ -1372,8 +1372,102 @@ test("a network turn failure cannot become a pass even when Codex exits zero wit
     code: "NETWORK_LOST",
   });
   expect(failed.plan).toBeUndefined();
+  expect(calls()).toHaveLength(1);
   expect(
     failed.checkpoints?.find((c) => c.id === "analysis:agent")?.status,
+  ).toBe("failed");
+});
+
+function assessmentFixture(emptyLastScope: boolean) {
+  return {
+    summary: "设置保存提示文案变更",
+    requirements: [
+      {
+        id: "REQ-001",
+        text: "三端应用与全局设置保存提示",
+        priority: "P1",
+        source: "description",
+      },
+    ],
+    planSteps: Array.from({ length: 6 }, (_, index) => ({
+      id: `PLAN-00${index + 1}`,
+      title: `修改已定位的保存提示 ${index + 1}`,
+      covers: ["REQ-001"],
+      expectedFiles: index === 5 && emptyLastScope ? [] : ["verify.cjs"],
+    })),
+    steps: ["仅调整保存成功提示文案"],
+    risks: [],
+    blockers: [],
+    testCases: [
+      {
+        id: "CASE-001",
+        title: "三端保存提示",
+        covers: ["REQ-001"],
+        verifies: Array.from(
+          { length: 6 },
+          (_, index) => `PLAN-00${index + 1}`,
+        ),
+        priority: "P1",
+        steps: ["保存应用设置与全局设置"],
+        expected: "显示对应端的延时与重启提示",
+      },
+    ],
+  };
+}
+
+test("invalid plan file scope receives one read-only correction and stops before development", async () => {
+  configure({
+    analysisResults: [assessmentFixture(true), assessmentFixture(false)],
+  });
+  const t = create();
+  const originalFiles = git("status", "--porcelain");
+  await service.action(t.id, "analyze");
+  await until(() => ["ready", "failed"].includes(store.getTask(t.id).status));
+  const result = store.getTask(t.id);
+  expect(result.status).toBe("ready");
+  expect(result.plan?.planSteps?.[5].expectedFiles).toEqual(["verify.cjs"]);
+  expect(result.snapshot).toBeUndefined();
+  const requests = calls();
+  expect(requests).toHaveLength(2);
+  expect(
+    requests.every(
+      (r) => r.stage === "analysis" && r.args.includes("read-only"),
+    ),
+  ).toBe(true);
+  expect(requests[1].prompt).toContain("planSteps.5.expectedFiles");
+  expect(requests[1].prompt).toContain("pure verification");
+  expect(
+    result.checkpoints?.find((c) => c.id === "analysis:agent")?.status,
+  ).toBe("passed");
+  expect(git("status", "--porcelain")).toBe(originalFiles);
+});
+
+test("persistent invalid plan stops after one correction with precise recovery guidance", async () => {
+  configure({
+    analysisResults: [
+      assessmentFixture(true),
+      assessmentFixture(true),
+      assessmentFixture(false),
+    ],
+  });
+  const t = create();
+  await service.action(t.id, "analyze");
+  const result = await status(t.id, "failed");
+  expect(calls()).toHaveLength(2);
+  expect(result.failure).toMatchObject({
+    category: "agent",
+    code: "AGENT_PLAN_INVALID",
+    checkpointId: "analysis:agent",
+  });
+  expect(result.failure?.message).toContain("第 6 个计划步骤");
+  expect(result.failure?.message).toContain("文件范围");
+  expect(result.failure?.recommendedActions.join("；")).not.toContain(
+    "网络和额度",
+  );
+  expect(result.plan).toBeUndefined();
+  expect(result.snapshot).toBeUndefined();
+  expect(
+    result.checkpoints?.find((c) => c.id === "analysis:agent")?.status,
   ).toBe("failed");
 });
 
