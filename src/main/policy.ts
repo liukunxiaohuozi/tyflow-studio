@@ -131,11 +131,6 @@ export function validateSettings(value: unknown): SettingsInput {
         "Store repository credentials in the password field, not the URL",
       );
   }
-  if (data.zentao.url) {
-    const u = new URL(data.zentao.url);
-    if (!["http:", "https:"].includes(u.protocol) || u.username || u.password)
-      throw new Error("Invalid ZenTao URL");
-  }
   return data;
 }
 

@@ -42,6 +42,7 @@ export interface Settings {
   developer: { name: string; email: string; defaultProject: string };
   projects: Project[];
   agent: { command: string; tyflowDirectory: string; testSkill: string };
+  /** Legacy persisted metadata only; the integration is retired from the client. */
   zentao: {
     enabled: boolean;
     url: string;
@@ -428,11 +429,9 @@ export interface StudioAPI {
   previewAsset(id: string, page?: string): Promise<void>;
   repository(projectId: string, sync?: boolean): Promise<RepositoryInfo>;
   testConnection(
-    target: "git" | "zentao" | "agent" | "wecom",
+    target: "git" | "agent" | "wecom",
     projectId?: string,
   ): Promise<{ ok: boolean; message: string }>;
-  openZentao(type: "story" | "task" | "bug", id: string): Promise<void>;
-  zentaoCatalog(): Promise<ZenTaoCatalog>;
   saveTask(input: TaskInput, id?: string): Promise<Task>;
   taskAction(
     id: string,

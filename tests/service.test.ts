@@ -320,7 +320,7 @@ afterEach(async () => {
   if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = originalCodexHome;
 });
-test("opens a linked ZenTao item under the configured site", async () => {
+test("retired ZenTao integration cannot connect, navigate or create new associations", async () => {
   const settings = store.settings();
   settings.zentao = {
     enabled: true,
@@ -329,10 +329,59 @@ test("opens a linked ZenTao item under the configured site", async () => {
     mappings: { fixture: { productId: "12", projectId: "34" } },
   };
   store.saveSettings(settings);
-  await service.openZentao("task", "81742");
-  expect(opened).toEqual([
-    "https://zentao.example.test/zentao/task-view-81742.html",
-  ]);
+  expect(service.settings().zentao.enabled).toBe(false);
+  expect(service.settings().zentao.hasSecret).toBeUndefined();
+  expect(await service.testConnection("zentao")).toMatchObject({ ok: false });
+  expect(opened).toEqual([]);
+  expect(
+    create({ zentao: { type: "task", id: "81742" } }).zentao,
+  ).toBeUndefined();
+});
+
+test("retiring ZenTao preserves legacy task links and configuration while ordinary settings still save", () => {
+  const legacy = { type: "bug" as const, id: "60683" };
+  const task = create();
+  task.zentao = legacy;
+  store.putTask(task);
+  const edited = service.saveTask(
+    {
+      title: "Updated title",
+      description: task.description,
+      kind: task.kind,
+      size: task.size,
+      projectId: task.projectId,
+      assetIds: task.assetIds,
+      branch: task.branch,
+      autoTest: task.autoTest,
+    },
+    task.id,
+  );
+  expect(edited.zentao).toEqual(legacy);
+  const settings = store.settings();
+  settings.zentao = {
+    enabled: true,
+    url: "legacy retired address",
+    username: "legacy",
+    mappings: {},
+  };
+  store.saveSettings(settings);
+  const saved = service.saveSettings({
+    ...service.settings(),
+    theme: "#008A70",
+  });
+  expect(saved.theme).toBe("#008A70");
+  expect(saved.zentao.enabled).toBe(false);
+  expect(saved.zentao.url).toBe(settings.zentao.url);
+  expect(store.getTask(task.id).zentao).toEqual(legacy);
+  const reopened = new Store(store.directory);
+  expect(reopened.getTask(task.id).zentao).toEqual(legacy);
+  expect(reopened.settings().zentao.enabled).toBe(false);
+  expect(() =>
+    service.saveSettings({
+      ...saved,
+      secrets: { zentao: "not-saved-fixture" },
+    }),
+  ).toThrow("Unknown credential key");
 });
 
 test("two isolated Bug repairs execute separately while a third queues; stopping it leaves both active", async () => {

@@ -367,20 +367,10 @@ function bind() {
   );
   handle("connection", (target, id) =>
     service!.testConnection(
-      z.enum(["git", "agent", "zentao", "wecom"]).parse(target),
+      z.enum(["git", "agent", "wecom"]).parse(target),
       id === undefined ? undefined : z.string().max(60).parse(id),
     ),
   );
-  handle("open-zentao", (type, id) =>
-    service!.openZentao(
-      z.enum(["story", "task", "bug"]).parse(type),
-      z
-        .string()
-        .regex(/^\d{1,12}$/)
-        .parse(id),
-    ),
-  );
-  handle("zentao-catalog", () => service!.zentaoCatalog());
   handle("save-task", (input, id) =>
     service!.saveTask(
       validateTaskInput(input),

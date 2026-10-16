@@ -47,7 +47,6 @@ import {
 } from "./policy";
 import { killTree, resolveCommand, which } from "./process";
 import { resolveCodex } from "./codex";
-import { ZenTaoIssueProvider, type IssueProvider } from "./providers/issue";
 import { WeComNotifier, type WeComTransport } from "./providers/wecom";
 import type { TaskNotification } from "./providers/notification";
 
@@ -74,7 +73,6 @@ export class StudioService {
   private agentProvider: AgentProvider;
   private browser?: BrowserProvider;
   private scm: SCMProvider;
-  private issue: IssueProvider;
   private policy: PolicyEngine;
   private delivering = new Set<string>();
   private closing = false;
@@ -98,7 +96,6 @@ export class StudioService {
       browser?: BrowserProvider;
       agent?: AgentProvider;
       scm?: SCMProvider;
-      issue?: IssueProvider;
       policy?: PolicyEngine;
       wecomTransport?: WeComTransport;
       agentEnvironment?: () => Promise<NodeJS.ProcessEnv>;
@@ -111,7 +108,6 @@ export class StudioService {
     );
     this.assets = this.evidence.assets;
     this.scm = providers.scm ?? GitSCMProvider;
-    this.issue = providers.issue ?? ZenTaoIssueProvider;
     this.policy = providers.policy ?? new PolicyEngine();
     this.agentProvider =
       providers.agent ??
@@ -188,7 +184,9 @@ export class StudioService {
     const settings = this.store.settings();
     for (const p of settings.projects)
       p.hasSecret = this.vault.has("git:" + p.id);
-    settings.zentao.hasSecret = this.vault.has("zentao");
+    // Legacy metadata is retained for existing records, not exposed as an active integration.
+    settings.zentao.enabled = false;
+    delete settings.zentao.hasSecret;
     settings.notifications.wecom = {
       enabled: settings.notifications.wecom?.enabled ?? false,
       hasSecret: this.vault.has("wecom"),
@@ -229,9 +227,11 @@ export class StudioService {
     if (this.synchronizations.size)
       throw new Error("远程同步中，请完成后再修改配置");
     const previousSettings = this.store.settings();
-    const { secrets, ...settings } = validateSettings(raw);
+    const { secrets, ...settings } = validateSettings({
+      ...raw,
+      zentao: { ...previousSettings.zentao, enabled: false },
+    });
     const validKeys = new Set([
-      "zentao",
       "updates",
       "wecom",
       ...settings.projects.map((p) => "git:" + p.id),
@@ -432,16 +432,6 @@ export class StudioService {
             " · CLI 参数检查通过；登录、模型连接和源码读取尚未验证，将在实际评估时检查",
         };
       }
-      if (target === "zentao") {
-        const settings = this.store.settings().zentao;
-        if (!settings.enabled || !settings.url)
-          throw new Error("请先启用并保存禅道地址");
-        const catalog = await this.zentaoCatalog();
-        return {
-          ok: true,
-          message: `登录成功，已读取 ${catalog.products.length} 个产品、${catalog.projects.length} 个项目和 ${catalog.items.length} 个待办事项。`,
-        };
-      }
       throw new Error("Unknown connection target");
     } catch (e) {
       return { ok: false, message: this.safe(String(e)) };
@@ -473,28 +463,6 @@ export class StudioService {
       (value) => this.safe(value),
     );
   }
-  public async zentaoCatalog() {
-    const settings = this.store.settings().zentao;
-    if (!settings.enabled || !settings.url)
-      throw new Error("请先启用并保存禅道连接");
-    return this.issue.loadCatalog(
-      settings.url,
-      settings.username,
-      this.vault.get("zentao"),
-    );
-  }
-  public async openZentao(type: "story" | "task" | "bug", id: string) {
-    const settings = this.store.settings().zentao;
-    if (!settings.enabled || !settings.url)
-      throw new Error("请先启用并保存禅道连接");
-    if (!/^\d{1,12}$/.test(id)) throw new Error("禅道条目 ID 格式不正确");
-    const target = new URL(this.issue.normalizeBaseUrl(settings.url));
-    target.pathname =
-      target.pathname.replace(/\/?$/, "/") + `${type}-view-${id}.html`;
-    target.search = "";
-    target.hash = "";
-    await this.openUrl(target.href);
-  }
   public saveTask(input: TaskInput, id?: string) {
     if (id && this.workflow.has(id))
       throw new Error("正在执行或排队的任务无法修改");
@@ -506,7 +474,8 @@ export class StudioService {
         : input.kind === "bug"
           ? false
           : input.autoTest,
-      zentao: input.zentao?.id ? input.zentao : undefined,
+      // Preserve historical links on edits; do not accept new associations.
+      zentao: id ? this.store.getTask(id).zentao : undefined,
     };
     const p = this.store
       .settings()

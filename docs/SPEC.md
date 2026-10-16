@@ -10,7 +10,7 @@ R05 Execution: one confirmation after plan preview; freeze settings/ref/plan/ass
 R06 Tests: automatic checkbox or manual intervention, configured frontend-test skill, actual npm checks and agent verification; failures block delivery, evidence retained.
 R07 Delivery: configured start script, HTTP readiness, system browser target URL, manual acceptance distinct from automated checks.
 R08 Records: persisted task list, search/filter/detail, bounded logs and export; attachments retained.
-R09 Settings: developer, repositories, Git credentials, optional ZenTao, local agent/Tyflow/test-skill paths; secrets encrypted by OS safeStorage, not returned to renderer. ZenTao performs authenticated read-only discovery of visible products, projects, assigned tasks and bugs; names are selected in the UI while IDs remain internal. Per-task linkage and safe external navigation are supported; writeback remains deferred.
+R09 Settings: developer, repositories, Git credentials, local agent/Tyflow/test-skill paths; secrets encrypted by OS safeStorage, not returned to renderer. ZenTao integration is retired: no connection settings, task-association controls, catalog requests or external-navigation IPC are exposed. Legacy settings and existing task links are preserved for compatibility only; new associations, credential configuration and writeback are unavailable.
 R10 Theme: presets/custom color, preview/save/reset, primary button white text with contrast-safe background, readable logs.
 R11 Security: sandboxed renderer, narrow validated IPC and sender checking, isolated prototype browser, command arguments shell-free, no imported files can request privileged actions. No automatic remote changes.
 

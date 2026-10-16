@@ -22,7 +22,6 @@ import type {
   Project,
   Settings,
   SettingsInput,
-  ZenTaoCatalog,
 } from "../shared/contracts";
 import { Field, Notice } from "./components";
 import { I18nT } from "./i18n";
@@ -44,7 +43,13 @@ export default function SettingsView({
   const [draft, setDraft] = useState<SettingsInput>(() =>
     structuredClone(settings),
   );
-  const [tab, setTab] = useState(initialTab);
+  const [tab, setTab] = useState(
+    ["updates", "developer", "runtime", "notifications", "appearance"].includes(
+      initialTab,
+    )
+      ? initialTab
+      : "developer",
+  );
   const [projectId, setProjectId] = useState(
     settings.developer.defaultProject || settings.projects[0]?.id || "",
   );
@@ -55,7 +60,6 @@ export default function SettingsView({
   }>();
   const [customHex, setCustomHex] = useState(settings.theme);
   const [addingProject, setAddingProject] = useState(false);
-  const [zentaoCatalog, setZentaoCatalog] = useState<ZenTaoCatalog>();
   const [newProject, setNewProject] = useState({
     id: "",
     name: "",
@@ -194,7 +198,7 @@ export default function SettingsView({
       setBusy("");
     }
   }
-  async function test(target: "git" | "zentao" | "agent" | "wecom") {
+  async function test(target: "git" | "agent" | "wecom") {
     if (!window.studio) return;
     setBusy(target);
     setConnection(undefined);
@@ -207,33 +211,6 @@ export default function SettingsView({
       );
     } catch (error) {
       const message = (error as Error).message;
-      if (message.includes("失效凭据已清除"))
-        setDraft((previous) => ({
-          ...previous,
-          zentao: { ...previous.zentao, hasSecret: false },
-        }));
-      setConnection({ ok: false, message });
-    } finally {
-      setBusy("");
-    }
-  }
-  async function loadZentao() {
-    if (!window.studio) return;
-    setBusy("zentao-load");
-    try {
-      const catalog = await window.studio.zentaoCatalog();
-      setZentaoCatalog(catalog);
-      setConnection({
-        ok: true,
-        message: `${I18nT("加载完成", "Loaded")}：${catalog.products.length} ${I18nT("个产品", "products")}，${catalog.projects.length} ${I18nT("个项目", "projects")}，${catalog.items.length} ${I18nT("个待办事项", "assigned items")}。`,
-      });
-    } catch (error) {
-      const message = (error as Error).message;
-      if (message.includes("失效凭据已清除"))
-        setDraft((previous) => ({
-          ...previous,
-          zentao: { ...previous.zentao, hasSecret: false },
-        }));
       setConnection({ ok: false, message });
     } finally {
       setBusy("");
@@ -254,11 +231,6 @@ export default function SettingsView({
       key: "runtime",
       name: I18nT("本地执行", "Local execution"),
       icon: Terminal,
-    },
-    {
-      key: "zentao",
-      name: I18nT("禅道连接", "ZenTao connection"),
-      icon: Link2,
     },
     {
       key: "notifications",
@@ -1020,194 +992,6 @@ export default function SettingsView({
             </div>
           </section>
         </>
-      )}
-      {tab === "zentao" && (
-        <section className="panel">
-          <div className="section-heading">
-            <div>
-              <h2>
-                <Link2 size={18} />
-                {I18nT("禅道连接", "ZenTao connection")}
-              </h2>
-              <p>
-                {I18nT(
-                  "保存个人连接配置，方便后续接入任务与缺陷。",
-                  "Save personal connection details for later task and bug integration.",
-                )}
-              </p>
-            </div>
-            <label className="checkbox">
-              <input
-                type="checkbox"
-                checked={draft.zentao.enabled}
-                onChange={(e) =>
-                  setDraft({
-                    ...draft,
-                    zentao: { ...draft.zentao, enabled: e.target.checked },
-                  })
-                }
-              />
-              {I18nT("启用连接", "Enable connection")}
-            </label>
-          </div>
-          <Notice>
-            {I18nT(
-              "连接后可映射本地项目，并在 Studio 任务中绑定禅道需求、任务或 Bug。状态回写默认关闭，避免未经确认修改禅道数据。",
-              "Map local projects and link Studio tasks to ZenTao stories, tasks, or bugs. Status write-back remains off to prevent unapproved changes.",
-            )}
-          </Notice>
-          <fieldset className="plain-fieldset" disabled={!draft.zentao.enabled}>
-            <Field label={I18nT("禅道地址", "ZenTao URL")}>
-              <input
-                value={draft.zentao.url}
-                placeholder="https://zentao.company.com"
-                onChange={(e) =>
-                  setDraft({
-                    ...draft,
-                    zentao: { ...draft.zentao, url: e.target.value },
-                  })
-                }
-              />
-            </Field>
-            <div className="form-row">
-              <Field label={I18nT("账号", "Username")}>
-                <input
-                  value={draft.zentao.username}
-                  autoComplete="off"
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      zentao: { ...draft.zentao, username: e.target.value },
-                    })
-                  }
-                />
-              </Field>
-              <Field
-                label={I18nT("密码 / Token", "Password / token")}
-                hint={
-                  draft.zentao.hasSecret
-                    ? I18nT(
-                        "已加密保存；留空沿用现有凭据。",
-                        "Encrypted credential stored; leave unchanged to retain it.",
-                      )
-                    : I18nT(
-                        "仅保存在当前系统用户的加密存储中。",
-                        "Stored encrypted for the current operating system user.",
-                      )
-                }
-              >
-                <div className="input-action">
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    placeholder={draft.zentao.hasSecret ? "••••••••" : ""}
-                    value={draft.secrets?.zentao || ""}
-                    onChange={(e) => secret("zentao", e.target.value)}
-                  />
-                  <button onClick={() => secret("zentao", "")}>
-                    {I18nT("清除", "Clear")}
-                  </button>
-                </div>
-              </Field>
-            </div>
-            <div className="section-heading">
-              <div>
-                <h2>{I18nT("项目映射", "Project mapping")}</h2>
-                <p>
-                  {I18nT(
-                    "把本地前端工程对应到禅道产品与项目，任务录入时会显示该映射。",
-                    "Map a local frontend repository to its ZenTao product and project.",
-                  )}
-                </p>
-              </div>
-            </div>
-            <div className="form-row three">
-              <Field label={I18nT("本地项目", "Local project")}>
-                <select
-                  value={projectId}
-                  onChange={(e) => setProjectId(e.target.value)}
-                >
-                  {draft.projects.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label={I18nT("禅道产品", "ZenTao product")}>
-                <select
-                  value={draft.zentao.mappings[projectId]?.productId || ""}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      zentao: {
-                        ...draft.zentao,
-                        mappings: {
-                          ...draft.zentao.mappings,
-                          [projectId]: {
-                            productId: e.target.value,
-                            projectId:
-                              draft.zentao.mappings[projectId]?.projectId || "",
-                          },
-                        },
-                      },
-                    })
-                  }
-                >
-                  <option value="">
-                    {I18nT("请选择产品", "Select product")}
-                  </option>
-                  {zentaoCatalog?.products.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label={I18nT("禅道项目", "ZenTao project")}>
-                <select
-                  value={draft.zentao.mappings[projectId]?.projectId || ""}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      zentao: {
-                        ...draft.zentao,
-                        mappings: {
-                          ...draft.zentao.mappings,
-                          [projectId]: {
-                            productId:
-                              draft.zentao.mappings[projectId]?.productId || "",
-                            projectId: e.target.value,
-                          },
-                        },
-                      },
-                    })
-                  }
-                >
-                  <option value="">
-                    {I18nT("请选择项目", "Select project")}
-                  </option>
-                  {zentaoCatalog?.projects.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </div>
-            <button
-              disabled={!native || Boolean(busy) || dirty}
-              onClick={() => void loadZentao()}
-            >
-              {busy === "zentao-load" ? (
-                <Loader2 className="spin" size={15} />
-              ) : (
-                <Link2 size={15} />
-              )}
-              {I18nT("验证账号并加载", "Verify account and load")}
-            </button>
-          </fieldset>
-        </section>
       )}
       {tab === "notifications" && (
         <section className="panel">

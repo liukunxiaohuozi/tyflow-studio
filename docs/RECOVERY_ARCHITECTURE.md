@@ -12,12 +12,12 @@
 | Agent Provider | src/main/providers/agent.ts、agent-schemas.ts | Codex 版本能力探测、登录、执行、结构化输出、超时与异常 |
 | Test Provider | src/main/providers/test.ts | frontend-test / test-engineer 调用、工程命令、用例级复用、证据和业务文件保护 |
 | SCM Provider | src/main/providers/scm.ts | Git 查询、同步、分支准备、差异、提交与推送 |
-| Issue Provider | src/main/providers/issue.ts | 禅道登录、目录加载、地址规范化 |
+| Issue Provider（已下线） | src/main/providers/issue.ts | 仅保留历史实现供将来参考；客户端不再组装、暴露或调用 |
 | Notification Provider | src/main/providers/notification.ts、wecom.ts | 通知资格、桌面及企业微信通道、持久化去重和失败隔离 |
 | Evidence Store | src/main/evidence.ts | 导入截图/附件资源管理、脱敏 JSONL 日志、命令/测试结果索引、原子结果文件、SHA256 和路径校验 |
 | Policy Engine | src/main/policy.ts | 操作权限、需求追踪、差异审查、证据硬闸、结果身份 |
 
-StudioService 保留任务入口、项目配置、工作区/预览生命周期和模块组装；不再直接实现 Codex 调用或专业测试循环。Agent、SCM、Issue、Policy 有可替换的接口入口，原模块路径保留兼容导出。SCM 使用 Git 协议，可服务 GitHub/GitLab 仓库；不是新增 GitHub/GitLab 平台 API。0.3.4 接入企业微信群通知：本地显式启用和加密保存 Webhook 后发送，默认关闭；钉钉仍仅保留 adapter seam。
+StudioService 保留任务入口、项目配置、工作区/预览生命周期和模块组装；不再直接实现 Codex 调用或专业测试循环。Agent、SCM、Policy 有可替换的接口入口；禅道关联与配置已下线，不再组装 Issue Provider，旧数据只作兼容保留。SCM 使用 Git 协议，可服务 GitHub/GitLab 仓库；不是新增 GitHub/GitLab 平台 API。0.3.4 接入企业微信群通知：本地显式启用和加密保存 Webhook 后发送，默认关闭；钉钉仍仅保留 adapter seam。
 
 ## 检查点
 

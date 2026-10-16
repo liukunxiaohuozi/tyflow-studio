@@ -7,7 +7,6 @@ import {
   Code2,
   FileArchive,
   FileText,
-  ExternalLink,
   GitBranch,
   Loader2,
   RefreshCw,
@@ -24,7 +23,6 @@ import type {
   TaskInput,
   TaskKind,
   StudioAPI,
-  ZenTaoItem,
 } from "../shared/contracts";
 import { activeStatuses, Field, Notice, Modal, PlanDialog } from "./components";
 import { I18nT } from "./i18n";
@@ -99,7 +97,6 @@ export default function TaskEditor({
             version: "",
           },
           autoTest: false,
-          zentao: undefined,
         },
   );
   const [assets, setAssets] = useState<FileAsset[]>(task?.assets || []);
@@ -111,8 +108,6 @@ export default function TaskEditor({
   const [repo, setRepo] = useState<RepositoryInfo>();
   const [repoError, setRepoError] = useState("");
   const [repoBusy, setRepoBusy] = useState(false);
-  const [zentaoItems, setZentaoItems] = useState<ZenTaoItem[]>([]);
-  const [zentaoBusy, setZentaoBusy] = useState(false);
   const [repoRevision, setRepoRevision] = useState(0);
   const [busy, setBusy] = useState(false);
   const [supplementOpen, setSupplementOpen] = useState(false);
@@ -237,20 +232,6 @@ export default function TaskEditor({
       valid = false;
     };
   }, [api, input.projectId, task?.projectId, task?.status, task?.planRevision]);
-  async function loadZentaoItems(silent = false) {
-    if (!api || !settings.zentao.enabled) return;
-    setZentaoBusy(true);
-    try {
-      setZentaoItems((await api.zentaoCatalog()).items);
-    } catch (error) {
-      if (!silent) report((error as Error).message, true);
-    } finally {
-      setZentaoBusy(false);
-    }
-  }
-  useEffect(() => {
-    void loadZentaoItems(true);
-  }, [api, settings.zentao.enabled]);
   async function importFiles(kind: "design" | "attachment", files?: FileList) {
     if (busy || running) return;
     if (!api)
@@ -715,79 +696,6 @@ export default function TaskEditor({
               </select>
             </label>
           </div>
-          {settings.zentao.enabled && (
-            <div className="project-create-card">
-              <div className="form-row">
-                <Field
-                  label={I18nT(
-                    "关联我的禅道事项（可选）",
-                    "Link my ZenTao item (optional)",
-                  )}
-                  hint={I18nT(
-                    "列表来自当前账号负责的任务和 Bug，无需填写 ID。",
-                    "Loaded from tasks and bugs assigned to the current account; no ID entry needed.",
-                  )}
-                >
-                  <select
-                    disabled={running}
-                    value={
-                      input.zentao
-                        ? `${input.zentao.type}:${input.zentao.id}`
-                        : ""
-                    }
-                    onChange={(event) => {
-                      const [type, id] = event.target.value.split(":");
-                      patch({
-                        zentao: id
-                          ? { type: type as "task" | "bug", id }
-                          : undefined,
-                      });
-                    }}
-                  >
-                    <option value="">
-                      {I18nT("不关联禅道事项", "Do not link an item")}
-                    </option>
-                    {zentaoItems.map((item) => (
-                      <option
-                        key={`${item.type}:${item.id}`}
-                        value={`${item.type}:${item.id}`}
-                      >
-                        {item.type === "task" ? I18nT("任务", "Task") : "Bug"} #
-                        {item.id} · {item.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label={I18nT("禅道条目", "ZenTao item")}>
-                  <div className="input-action">
-                    <button
-                      type="button"
-                      disabled={zentaoBusy || running}
-                      onClick={() => void loadZentaoItems()}
-                    >
-                      {zentaoBusy ? (
-                        <Loader2 className="spin" size={15} />
-                      ) : (
-                        <RefreshCw size={15} />
-                      )}
-                      {I18nT("刷新列表", "Refresh list")}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!native || !input.zentao?.id}
-                      onClick={() =>
-                        input.zentao &&
-                        void api?.openZentao(input.zentao.type, input.zentao.id)
-                      }
-                    >
-                      <ExternalLink size={15} />
-                      {I18nT("打开", "Open")}
-                    </button>
-                  </div>
-                </Field>
-              </div>
-            </div>
-          )}
           <fieldset className="plain-fieldset" disabled={running || busy}>
             {input.kind !== "bug" && (
               <div className="form-row">

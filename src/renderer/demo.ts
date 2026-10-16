@@ -241,8 +241,6 @@ export class DemoSession {
           "Demo environment; no real connection.",
         ),
       }),
-      openZentao: async () => {},
-      zentaoCatalog: async () => ({ products: [], projects: [], items: [] }),
       saveTask: async (input) => this.save(input),
       taskAction: async (_id, action, options) => this.action(action, options),
       openTarget: async () => this.preview(),

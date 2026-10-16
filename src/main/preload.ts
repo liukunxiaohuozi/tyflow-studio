@@ -24,8 +24,6 @@ const api: StudioAPI = {
   repository: (id, sync) => ipcRenderer.invoke("studio:repository", id, sync),
   testConnection: (target, id) =>
     ipcRenderer.invoke("studio:connection", target, id),
-  openZentao: (type, id) => ipcRenderer.invoke("studio:open-zentao", type, id),
-  zentaoCatalog: () => ipcRenderer.invoke("studio:zentao-catalog"),
   saveTask: (input, id) => ipcRenderer.invoke("studio:save-task", input, id),
   taskAction: (id, action, options) =>
     ipcRenderer.invoke("studio:action", id, action, options),
