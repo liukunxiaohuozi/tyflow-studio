@@ -23,6 +23,7 @@ import { normalizeScreenshot, screenshotThumbnail } from "./images";
 import { NotificationProvider } from "./providers/notification";
 import { setupChecks } from "./setup";
 import { UpdateManager } from "./updates";
+import { createUpdateFetch } from "./update-transport";
 import { agentEnvironment } from "./agent-network";
 import { PlaywrightBrowserProvider } from "./providers/browser";
 import { browserInputSchema } from "./browser-policy";
@@ -563,8 +564,7 @@ else {
         settings: () => store.settings(),
         secret: () => vault.get("updates"),
         // Use Chromium networking so macOS/Windows system proxies and PAC apply.
-        fetch: (input, init) =>
-          net.fetch(input instanceof Request ? input.url : String(input), init),
+        fetch: createUpdateFetch((options) => net.request(options)),
       });
       const preferred =
         app.isPackaged && process.env.STUDIO_SMOKE !== "1"

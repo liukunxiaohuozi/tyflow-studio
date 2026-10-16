@@ -80,6 +80,74 @@ test("versions compare numeric components and do not downgrade", () => {
   expect(newer("0.3.0", "0.3.0")).toBe(false);
 });
 
+function installedManager(runtimeVersion: string, executable: string) {
+  fs.writeFileSync(executable, "fixture executable");
+  return new UpdateManager({
+    directory: root,
+    version: runtimeVersion,
+    platform: process.platform,
+    arch: process.arch,
+    executable,
+    settings: () => initialSettings(),
+    secret: () => undefined,
+  });
+}
+
+test("a manual newer installation replaces stale updater selection without jumping backwards", () => {
+  const oldExecutable = path.join(root, "old.exe");
+  const selectedExecutable = path.join(root, "selected.exe");
+  fs.writeFileSync(selectedExecutable, "old selected fixture");
+  installedManager("0.3.4", oldExecutable).select({
+    executable: selectedExecutable,
+    version: "0.3.5",
+  });
+  const manualExecutable = path.join(root, "manual.exe");
+  const manual = installedManager("0.3.12", manualExecutable);
+  expect(manual.preferredExecutable()).toBeUndefined();
+  const state = JSON.parse(
+    fs.readFileSync(path.join(root, "updates/state.json"), "utf8"),
+  );
+  expect(state.active).toEqual({
+    executable: manualExecutable,
+    version: "0.3.12",
+  });
+  expect(state.previous).toEqual({
+    executable: selectedExecutable,
+    version: "0.3.5",
+  });
+  expect(installedManager("0.3.4", oldExecutable).preferredExecutable()).toBe(
+    manualExecutable,
+  );
+});
+
+test("manual upgrade at the old executable path is not mistaken for explicit rollback", () => {
+  const executable = path.join(root, "original.exe");
+  const selectedExecutable = path.join(root, "selected.exe");
+  fs.writeFileSync(selectedExecutable, "fixture");
+  installedManager("0.3.4", executable).select({
+    executable: selectedExecutable,
+    version: "0.3.5",
+  });
+  expect(
+    installedManager("0.3.12", executable).preferredExecutable(),
+  ).toBeUndefined();
+});
+
+test("explicit rollback still works from the exact runtime that selected it", () => {
+  const executable = path.join(root, "current.exe");
+  const olderExecutable = path.join(root, "older.exe");
+  fs.writeFileSync(olderExecutable, "fixture");
+  const current = installedManager("0.3.12", executable);
+  current.select({ executable: olderExecutable, version: "0.3.11" });
+  expect(current.preferredExecutable()).toBe(olderExecutable);
+  expect(installedManager("0.3.12", executable).preferredExecutable()).toBe(
+    olderExecutable,
+  );
+  expect(
+    installedManager("0.3.11", olderExecutable).preferredExecutable(),
+  ).toBeUndefined();
+});
+
 test("same GitHub version is current without fetching a manifest or requiring packages", async () => {
   const settings = initialSettings();
   settings.updates = {
@@ -236,6 +304,15 @@ test("authenticated redirects never forward credentials to another origin", asyn
   expect(result.status).toBe("failed");
   expect(seen[0].authorization).toBe("Bearer fixture-private-token");
   expect(seen[1].authorization).toBeUndefined();
+});
+
+test("redirect transport failures explain the one-time manual installation instead of claiming current", async () => {
+  const result = await fixture({}, (async () => {
+    throw new Error("Redirect was cancelled");
+  }) as typeof fetch).check();
+  expect(result.status).toBe("failed");
+  expect(result.error).toContain("手动下载");
+  expect(result.error).not.toBe("Redirect was cancelled");
 });
 test("ZIP traversal, duplicate paths and escaping links are rejected; contained macOS links work", async () => {
   for (const entries of [

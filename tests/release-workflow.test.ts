@@ -19,6 +19,7 @@ describe("desktop release workflow", () => {
     expect(workflow).toContain("Verify published packages");
     expect(workflow).toContain("gh api");
     expect(workflow).toContain("Publish verified GitHub Release");
+    expect(workflow).toContain("node scripts/verify-update-transport.cjs");
     expect(workflow).toContain("-F draft=false");
   });
 });

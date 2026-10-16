@@ -24,6 +24,8 @@ jobs:
       - run: npm run lint
       - name: Run regression and real Git integration on this platform
         run: npm test
+      - name: Verify real Electron updater redirects and downloads
+        run: node scripts/verify-update-transport.cjs
       - run: npm run scan
       - name: Ensure portable skill bundle
         run: |

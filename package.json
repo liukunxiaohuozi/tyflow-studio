@@ -1,7 +1,7 @@
 {
   "name": "tyflow-studio",
   "productName": "TingYun Studio",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "OpenDesign to development desktop workspace",
   "author": "TingYun Studio",
   "private": true,

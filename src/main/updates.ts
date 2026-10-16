@@ -172,8 +172,12 @@ export class UpdateManager {
       return english
         ? "The update request timed out. Check your network or system proxy and try again; the latest version could not be confirmed."
         : "更新请求超时，请检查网络或系统代理后重试；本次未能确认是否为最新版本。";
+    if (/Redirect was cancelled/i.test(message))
+      return english
+        ? "The client could not handle the update server redirect. Download the latest client from the release page and install it manually once."
+        : "客户端未能处理更新服务器跳转，请从发布页手动下载并安装修复版一次；本次未能确认更新。";
     if (
-      /fetch failed|failed to fetch|net::ERR_|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNREFUSED|terminated|network/i.test(
+      /fetch failed|failed to fetch|net::ERR_|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNREFUSED|terminated|interrupted|network/i.test(
         message,
       )
     )
@@ -459,10 +463,38 @@ export class UpdateManager {
   }
   preferredExecutable() {
     const active = this.state.active;
-    return active &&
-      active.version !== this.options.version &&
-      fs.existsSync(active.executable)
-      ? active.executable
-      : undefined;
+    if (
+      !active ||
+      active.version === this.options.version ||
+      !version.safeParse(active.version).success ||
+      !fs.existsSync(active.executable)
+    )
+      return undefined;
+    if (newer(active.version, this.options.version)) return active.executable;
+
+    // Only the exact runtime that explicitly selected a rollback may redirect
+    // backwards. A manually installed newer app must not inherit stale selection.
+    const previous = this.state.previous;
+    const executableKey = (file: string) => {
+      const resolved = fs.existsSync(file)
+        ? fs.realpathSync(file)
+        : path.resolve(file);
+      return this.options.platform === "win32"
+        ? resolved.toLowerCase()
+        : resolved;
+    };
+    if (
+      previous?.version === this.options.version &&
+      executableKey(previous.executable) ===
+        executableKey(this.options.executable)
+    )
+      return active.executable;
+    this.state.previous = active;
+    this.state.active = {
+      executable: this.options.executable,
+      version: this.options.version,
+    };
+    this.save();
+    return undefined;
   }
 }
