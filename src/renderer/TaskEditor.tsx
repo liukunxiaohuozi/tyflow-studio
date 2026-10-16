@@ -32,6 +32,7 @@ import AttachmentImages from "./AttachmentImages";
 import BranchSelection from "./BranchSelection";
 import RecoveryPanel from "./RecoveryPanel";
 import SupplementDialog from "./SupplementDialog";
+import RequirementAssets from "./RequirementAssets";
 interface Props {
   api?: StudioAPI;
   simulated?: boolean;
@@ -50,6 +51,7 @@ function suggestedBranch() {
 }
 function inputFromTask(task: Task): TaskInput {
   return {
+    workflowMode: task.workflowMode,
     workspaceMode: task.workspaceMode ?? "current",
     title: task.title,
     kind: task.kind,
@@ -58,7 +60,7 @@ function inputFromTask(task: Task): TaskInput {
     projectId: task.projectId,
     assetIds: task.assetIds,
     branch: { ...task.branch, version: "" },
-    autoTest: task.kind === "bug" ? false : task.autoTest,
+    autoTest: task.autoTest,
     zentao: task.zentao ? { ...task.zentao } : undefined,
   };
 }
@@ -82,22 +84,21 @@ export default function TaskEditor({
     task
       ? inputFromTask(task)
       : {
-          workspaceMode: "isolated",
+          workflowMode: "quick",
+          workspaceMode: "current",
           title: "",
           description: "",
-          kind: "design",
-          size: "medium",
+          kind: "text",
+          size: "small",
           projectId: initialProjectId,
           assetIds: [],
           branch: {
-            mode:
-              settings.projects.find((p) => p.id === initialProjectId)
-                ?.defaultBranchMode || "new",
+            mode: "existing",
             base: "",
             name: suggestedBranch(),
             version: "",
           },
-          autoTest: true,
+          autoTest: false,
           zentao: undefined,
         },
   );
@@ -127,6 +128,8 @@ export default function TaskEditor({
   const pasteLock = useRef(false);
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
   const project = settings.projects.find((p) => p.id === input.projectId);
+  const quick = input.workflowMode === "quick";
+  const direct = quick || (!input.workflowMode && input.kind === "bug");
   const native = Boolean(api);
   const running = Boolean(task && activeStatuses.includes(task.status));
   const confirm = Boolean(task?.plan && !editMode);
@@ -176,24 +179,32 @@ export default function TaskEditor({
     if (!api || !input.projectId) return;
     setRepoBusy(true);
     api
-      .repository(input.projectId, true)
+      .repository(input.projectId, !quick)
       .then((result) => {
         if (!valid) return;
         setRepo(result);
-        setRepoError(result.syncError || "");
+        setRepoError(quick ? "" : result.syncError || "");
         setInput((prev) => ({
           ...prev,
-          branch: {
-            ...prev.branch,
-            base: prev.branch.base || result.branch,
-            name:
-              prev.branch.mode === "existing"
-                ? result.remoteBranches?.find((b) => b.ref === prev.branch.base)
-                    ?.branch ||
-                  prev.branch.base ||
-                  result.branch
-                : prev.branch.name,
-          },
+          branch: quick
+            ? {
+                mode: "existing",
+                base: result.branch,
+                name: result.branch,
+                version: "",
+              }
+            : {
+                ...prev.branch,
+                base: prev.branch.base || result.branch,
+                name:
+                  prev.branch.mode === "existing"
+                    ? result.remoteBranches?.find(
+                        (b) => b.ref === prev.branch.base,
+                      )?.branch ||
+                      prev.branch.base ||
+                      result.branch
+                    : prev.branch.name,
+              },
         }));
       })
       .catch((error) => {
@@ -205,7 +216,7 @@ export default function TaskEditor({
     return () => {
       valid = false;
     };
-  }, [api, input.projectId, settings.projects, repoRevision]);
+  }, [api, input.projectId, settings.projects, repoRevision, quick]);
   useEffect(() => {
     if (!api || task?.status !== "ready" || task.projectId !== input.projectId)
       return;
@@ -270,7 +281,8 @@ export default function TaskEditor({
         );
       const incoming = await api.importFiles(kind, paths);
       if (!incoming.length) return;
-      if (kind === "design") {
+      const prototype = incoming.find((asset) => asset.kind === "design");
+      if (prototype) {
         if (incoming.length !== 1)
           throw new Error(
             I18nT(
@@ -298,12 +310,34 @@ export default function TaskEditor({
       for (const asset of incoming)
         if (!merged.some((a) => a.sha256 === asset.sha256)) merged.push(asset);
       setAssets(merged);
-      patch({ assetIds: merged.map((a) => a.id) }, true);
+      const requirementFiles = incoming.some(
+        (asset) =>
+          asset.sourceType === "requirements" &&
+          (asset.documents?.length || /\.zip$/i.test(asset.name)),
+      );
+      patch(
+        {
+          assetIds: merged.map((a) => a.id),
+          ...(prototype
+            ? { kind: "design", workflowMode: "standard", size: "medium" }
+            : kind === "design" || (input.kind === "text" && requirementFiles)
+              ? {
+                  kind: "text",
+                  workflowMode: "standard",
+                  size: "medium",
+                  title:
+                    input.title.trim() ||
+                    incoming[0].name.replace(/\.[^.]+$/, "").slice(0, 160),
+                }
+              : {}),
+        },
+        true,
+      );
       if (incoming.length)
         report(
           I18nT(
-            "设计文件已识别，选择项目和分支后即可评估。",
-            "Design files inspected. Select a project and branch to start assessment.",
+            "资料已导入：HTML 原型按设计评估，文档与图片按需求资料评估；自动化测试仍由你选择。",
+            "Files imported: HTML prototypes use design assessment; documents and images use requirement assessment. Automated testing remains your choice.",
           ),
         );
     } catch (error) {
@@ -439,15 +473,21 @@ export default function TaskEditor({
       setBusy(false);
     }
   }
-  async function revisePlan() {
-    if (!api || !task || !planFeedback.trim()) return;
+  async function revisePlan(reassess = false) {
+    if (!api || !task || (!reassess && !planFeedback.trim())) return;
     setBusy(true);
     try {
       const notes = planFeedback.trim();
       onTask(
-        await api.taskAction(task.id, "analyze", {
-          planFeedback: notes,
-        }),
+        await api.taskAction(
+          task.id,
+          "analyze",
+          reassess
+            ? undefined
+            : {
+                planFeedback: notes,
+              },
+        ),
       );
       setPlanFeedback("");
       if (simulated) {
@@ -474,7 +514,7 @@ export default function TaskEditor({
           title:
             input.title.trim() ||
             input.description.trim().split(/\r?\n/)[0].slice(0, 80) ||
-            I18nT("Bug 修复", "Bug fix"),
+            I18nT("轻量修改", "Quick modification"),
         },
         task?.id,
       );
@@ -612,7 +652,25 @@ export default function TaskEditor({
                     patch(
                       {
                         kind: key,
-                        ...(key === "bug" ? { autoTest: false } : {}),
+                        workflowMode: key === "design" ? "standard" : "quick",
+                        size: key === "design" ? "medium" : "small",
+                        autoTest: false,
+                        workspaceMode:
+                          key === "design" ? "isolated" : "current",
+                        branch:
+                          key === "design"
+                            ? {
+                                mode: "new",
+                                base: repo?.branch || "",
+                                name: suggestedBranch(),
+                                version: "",
+                              }
+                            : {
+                                mode: "existing",
+                                base: repo?.branch || "",
+                                name: repo?.branch || "",
+                                version: "",
+                              },
                       },
                       true,
                     )
@@ -771,8 +829,8 @@ export default function TaskEditor({
                 </strong>
                 <p>
                   {I18nT(
-                    "支持 OpenDesign 导出的 ZIP、HTML，识别页面与资源后进入评估。",
-                    "Import exported ZIP or HTML files. Inspect pages and assets before assessment.",
+                    "支持 OpenDesign 的 ZIP、HTML；如果 ZIP 中只有需求文档与设计图，会自动按文字需求导入，无需 HTML。",
+                    "Import OpenDesign ZIP or HTML. ZIPs containing requirement documents and design images are routed to text requirements without needing HTML.",
                   )}
                 </p>
                 <button
@@ -906,6 +964,59 @@ export default function TaskEditor({
                 </div>
               </Field>
             )}
+            {input.kind === "text" && (
+              <RequirementAssets
+                assets={assets}
+                api={api}
+                upload={(files) => void importFiles("attachment", files)}
+                remove={removeAttachment}
+                report={report}
+              />
+            )}
+            <Field label={I18nT("执行方式", "Execution mode")}>
+              <select
+                value={input.workflowMode ?? "standard"}
+                disabled={running || busy}
+                onChange={(e) =>
+                  patch(
+                    {
+                      workflowMode: e.target.value as "quick" | "standard",
+                      workspaceMode:
+                        e.target.value === "quick" ? "current" : "isolated",
+                      size: e.target.value === "quick" ? "small" : "medium",
+                      branch:
+                        e.target.value === "quick"
+                          ? {
+                              mode: "existing",
+                              base: repo?.branch || "",
+                              name: repo?.branch || "",
+                              version: "",
+                            }
+                          : {
+                              mode: "new",
+                              base: repo?.branch || "",
+                              name: suggestedBranch(),
+                              version: "",
+                            },
+                    },
+                    true,
+                  )
+                }
+              >
+                <option value="quick" disabled={input.kind === "design"}>
+                  {I18nT(
+                    "L1 轻量修改：文案、样式、小 Bug",
+                    "L1 quick edit: copy, styles, small bugs",
+                  )}
+                </option>
+                <option value="standard">
+                  {I18nT(
+                    "标准开发：评估、确认计划，可选并行工作区",
+                    "Standard: assessment, plan approval, optional isolated workspace",
+                  )}
+                </option>
+              </select>
+            </Field>
             <BranchSelection
               input={input}
               repo={repo}
@@ -921,10 +1032,15 @@ export default function TaskEditor({
             <div className="section-heading">
               <div>
                 <h2>
-                  {I18nT(
-                    "评估完成，确认后开始开发",
-                    "Assessment ready. Confirm to start development.",
-                  )}
+                  {task?.plan?.blockers.length
+                    ? I18nT(
+                        "需求已整理，评估存在阻塞",
+                        "Requirement captured. Assessment is blocked.",
+                      )
+                    : I18nT(
+                        "评估完成，确认后开始开发",
+                        "Assessment ready. Confirm to start development.",
+                      )}
                 </h2>
                 <p>
                   {I18nT(
@@ -970,6 +1086,14 @@ export default function TaskEditor({
                     <li key={i}>{x}</li>
                   ))}
                 </ul>
+                <button
+                  type="button"
+                  disabled={running || busy || !native}
+                  onClick={() => void revisePlan(true)}
+                >
+                  <RefreshCw size={15} />
+                  {I18nT("问题已处理，重新评估", "Issue resolved. Reassess")}
+                </button>
               </Notice>
             ) : null}
             <div className="plan-revision">
@@ -1294,15 +1418,20 @@ export default function TaskEditor({
                     "确认后锁定计划与版本，开始实际开发。",
                     "Confirmation freezes the plan and version and starts real development.",
                   )
-                : input.kind === "bug"
+                : quick
                   ? I18nT(
-                      "直接调用 Codex 在所选分支定位、修复并完成必要检查，然后启动项目供你验收。",
-                      "Call Codex directly to diagnose, fix and run required checks on the selected branch, then launch the project for review.",
+                      "直接修改当前项目，保存后在你已打开的浏览器查看热更新。",
+                      "Edit the current project directly; inspect hot reload in your existing browser.",
                     )
-                  : I18nT(
-                      "将基于所选分支进行只读评估，不修改代码。",
-                      "Run a read-only assessment against the selected branch without modifying code.",
-                    )}
+                  : input.kind === "bug"
+                    ? I18nT(
+                        "直接调用 Codex 在所选分支定位、修复并完成必要检查，然后启动项目供你验收。",
+                        "Call Codex directly to diagnose, fix and run required checks on the selected branch, then launch the project for review.",
+                      )
+                    : I18nT(
+                        "将基于所选分支进行只读评估，不修改代码。",
+                        "Run a read-only assessment against the selected branch without modifying code.",
+                      )}
           </span>
         </div>
         <div className="actions">
@@ -1370,18 +1499,21 @@ export default function TaskEditor({
                     Boolean(repoError) ||
                     !repo ||
                     !native ||
-                    (input.kind !== "bug" && !input.title.trim()) ||
+                    (!direct && !input.title.trim()) ||
                     !input.branch.base ||
                     (input.branch.mode === "new" &&
                       !input.branch.name.trim()) ||
-                    Boolean(selectedLocal?.upstreamMissing) ||
-                    Boolean(selectedLocal?.ahead && selectedLocal?.behind) ||
+                    (!quick && Boolean(selectedLocal?.upstreamMissing)) ||
+                    (!quick &&
+                      Boolean(selectedLocal?.ahead && selectedLocal?.behind)) ||
                     (!input.description.trim() &&
-                      !assets.some((a) => a.kind === "design"))
+                      !assets.some(
+                        (a) =>
+                          a.kind === "design" ||
+                          (input.kind === "text" && a.documents?.length),
+                      ))
                   }
-                  onClick={() =>
-                    continueAction(input.kind === "bug" ? "fix" : "analyze")
-                  }
+                  onClick={() => continueAction(direct ? "fix" : "analyze")}
                 >
                   {busy ? (
                     <Loader2 className="spin" size={16} />
@@ -1390,11 +1522,13 @@ export default function TaskEditor({
                   ) : (
                     <ArrowRight size={16} />
                   )}
-                  {input.kind === "bug"
-                    ? I18nT("开始修复", "Start fixing")
-                    : task?.plan
-                      ? I18nT("重新评估", "Reassess")
-                      : I18nT("开始评估", "Start assessment")}
+                  {quick
+                    ? I18nT("开始修改", "Start modification")
+                    : direct
+                      ? I18nT("开始修复", "Start fixing")
+                      : task?.plan
+                        ? I18nT("重新评估", "Reassess")
+                        : I18nT("开始评估", "Start assessment")}
                 </button>
               )}
             </>

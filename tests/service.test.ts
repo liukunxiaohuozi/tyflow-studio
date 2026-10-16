@@ -9,6 +9,8 @@ import { Store } from "../src/main/store";
 import { GitSCMProvider } from "../src/main/providers/scm";
 import { PolicyEngine } from "../src/main/policy";
 import type { Task, TaskInput } from "../src/shared/contracts";
+import type { BrowserProvider } from "../src/main/providers/browser";
+import { ProviderFailure } from "../src/main/workflow/failures";
 
 jest.setTimeout(30000);
 let root: string;
@@ -96,8 +98,112 @@ async function ready() {
 async function developed() {
   const task = await ready();
   await service.action(task.id, "develop");
-  return status(task.id, "waiting-test");
+  return status(task.id, "waiting-review");
 }
+
+test("quick text modification uses the live checkout with one Agent call and no test/browser ceremony", async () => {
+  const task = create({
+    kind: "text",
+    size: "small",
+    workflowMode: "quick",
+    workspaceMode: "current",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+    autoTest: false,
+  });
+  configure({
+    developmentFiles: { "verify.cjs": "console.log('quick copy updated')" },
+  });
+  await service.action(task.id, "fix");
+  const finished = await status(task.id, "waiting-review");
+  expect(finished.workspace).toBeUndefined();
+  expect(finished.snapshot?.project.directory).toBe(repository);
+  expect(git("branch", "--show-current")).toBe("main");
+  expect(
+    fs.readFileSync(path.join(repository, "verify.cjs"), "utf8"),
+  ).toContain("quick copy updated");
+  expect(calls().map((call) => call.stage)).toEqual(["development"]);
+  expect(calls()[0].prompt).toContain("L1");
+  expect(calls()[0].prompt).not.toContain(
+    "Read applicable AGENTS.md and the Tyflow workflow",
+  );
+  expect(calls()[0].prompt).not.toContain(
+    "Studio will invoke the configured professional test provider",
+  );
+  expect(
+    finished.checkpoints?.some(
+      (c) =>
+        c.id === "development:dependencies" ||
+        c.id.startsWith("analysis:") ||
+        c.id.startsWith("test:"),
+    ),
+  ).toBe(false);
+  expect(
+    finished.logs.some((entry) =>
+      /安装独立依赖|专用.*浏览器/.test(entry.message),
+    ),
+  ).toBe(false);
+});
+
+test("unchecked automated testing finishes text development for manual browser review", async () => {
+  const task = await ready();
+  await service.action(task.id, "develop");
+  const finished = await status(task.id, "waiting-review");
+  expect(finished.testExecution).toBeUndefined();
+  expect(calls().map((call) => call.stage)).toEqual([
+    "analysis",
+    "development",
+  ]);
+  expect(finished.logs.at(-1)?.message).toContain("浏览器");
+});
+
+test("quick mode refuses another branch and preserves dirty work until explicitly confirmed", async () => {
+  git("branch", "other");
+  const changedBranch = create({
+    workflowMode: "quick",
+    workspaceMode: "current",
+    branch: { mode: "existing", base: "other", name: "other", version: "" },
+  });
+  await service.action(changedBranch.id, "fix");
+  expect((await status(changedBranch.id, "failed")).failure?.code).toBe(
+    "QUICK_BRANCH_CHANGED",
+  );
+  expect(git("branch", "--show-current")).toBe("main");
+  expect(calls()).toHaveLength(0);
+  fs.writeFileSync(path.join(repository, "user-note.txt"), "User work remains");
+  const dirtyTask = create({
+    workflowMode: "quick",
+    workspaceMode: "current",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+  });
+  configure({ developmentFiles: { "verify.cjs": "console.log('small fix')" } });
+  await service.action(dirtyTask.id, "fix");
+  await status(dirtyTask.id, "failed");
+  expect(calls()).toHaveLength(0);
+  await service.action(dirtyTask.id, "retry", { allowDirty: true });
+  await status(dirtyTask.id, "waiting-review");
+  expect(fs.readFileSync(path.join(repository, "user-note.txt"), "utf8")).toBe(
+    "User work remains",
+  );
+  expect(calls().map((call) => call.stage)).toEqual(["development"]);
+});
+
+test("quick source guard blocks new package edits without erasing the generated or existing code", async () => {
+  const task = create({
+    workflowMode: "quick",
+    workspaceMode: "current",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+  });
+  const replacement =
+    '{"private":true,"scripts":{"test":"node verify.cjs"},"changed":true}';
+  configure({ developmentFiles: { "package.json": replacement } });
+  await service.action(task.id, "fix");
+  const stopped = await status(task.id, "failed");
+  expect(stopped.failure?.code).toBe("QUICK_REQUIRES_STANDARD");
+  expect(fs.readFileSync(path.join(repository, "package.json"), "utf8")).toBe(
+    replacement,
+  );
+  expect(stopped.testExecution).toBeUndefined();
+});
 async function unusedPort() {
   const reservation = net.createServer();
   await new Promise<void>((resolve) =>
@@ -347,6 +453,39 @@ test("manual browser review preserves the frozen workspace and does not manufact
   expect(store.getTask(task.id).delivery).toBeUndefined();
 });
 
+test("requirement documents can drive assessment without pasted text and all source paths reach the Agent", async () => {
+  const document = path.join(root, "requirement.md");
+  const rules = path.join(root, "interaction.txt");
+  fs.writeFileSync(document, "# Fixed requirement");
+  fs.writeFileSync(rules, "Use the design and preserve behavior");
+  const assets = await service.assets.importFiles(
+    [document, rules],
+    "attachment",
+  );
+  const task = create({
+    kind: "text",
+    description: "",
+    assetIds: assets.map((a) => a.id),
+  });
+  await service.action(task.id, "analyze");
+  await status(task.id, "ready");
+  for (const asset of assets) {
+    expect(calls()[0].prompt).toContain(service.assets.rootPath(asset.id));
+    expect(calls()[0].prompt).toContain(service.assets.filePath(asset.id));
+  }
+  expect(calls()[0].prompt).toContain("not interactive HTML prototypes");
+  expect(calls()[0].prompt).toContain("untrusted");
+  const image = await service.assets.importImage(
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aNu0AAAAASUVORK5CYII=",
+      "base64",
+    ),
+  );
+  expect(() => create({ description: "", assetIds: [image.id] })).toThrow(
+    "需求或问题描述",
+  );
+});
+
 test("bug screenshots persist with the draft, reach assessment, and removal invalidates the previous plan", async () => {
   const png = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aNu0AAAAASUVORK5CYII=",
@@ -461,12 +600,19 @@ test("assessment invokes read-only Codex, passes schema and exact target commit,
       "--ignore-user-config",
       "--sandbox",
       "read-only",
+      "-c",
+      'approval_policy="never"',
       "--output-schema",
       "--output-last-message",
       "-",
     ]),
   );
   expect(invocation.cwd).toBe(fs.realpathSync(repository));
+  expect(invocation.args).not.toContain("--approve-for-me");
+  expect(invocation.args).not.toContain("--ignore-rules");
+  expect(invocation.args).not.toContain(
+    "--dangerously-bypass-approvals-and-sandbox",
+  );
   expect(invocation.schema.properties).toHaveProperty("testCases");
   expect(invocation.prompt).toContain(git("rev-parse", "HEAD"));
   expect(task.targetCommit).toBe(git("rev-parse", "HEAD"));
@@ -597,7 +743,7 @@ test("remote-only existing branch freezes the actual local branch for subsequent
   await service.action(task.id, "analyze");
   await status(task.id, "ready");
   await service.action(task.id, "develop");
-  const developedTask = await status(task.id, "waiting-test");
+  const developedTask = await status(task.id, "waiting-review");
   expect(developedTask.snapshot?.branch.base).toBe("feature/remote-only");
   expect(git("rev-parse", "--abbrev-ref", "@{upstream}")).toBe(
     "origin/feature/remote-only",
@@ -662,7 +808,7 @@ test("structured agent results redact credentials from nested plans, frozen snap
     },
   });
   await service.action(task.id, "develop");
-  const completed = await status(task.id, "waiting-test");
+  const completed = await status(task.id, "waiting-review");
   expect(completed.checks[0].detail).toContain("[REDACTED]");
   expect(completed.checks[0].name).toContain("[REDACTED]");
   expect(JSON.stringify(completed)).not.toContain(secret);
@@ -711,7 +857,7 @@ test("project configuration changes leave an executing snapshot and its original
   service.saveSettings(settings);
   const preserved = store.getTask(task.id);
   expect(preserved.snapshot).toEqual(task.snapshot);
-  expect(preserved.status).toBe("waiting-test");
+  expect(preserved.status).toBe("waiting-review");
   expect(preserved.plan).toEqual(task.plan);
 });
 
@@ -729,8 +875,13 @@ test("development freezes approval and creates the requested branch before execu
     fs.existsSync(path.join(store.directory, "codex-home", "auth.json")),
   ).toBe(false);
   expect(opened).toEqual([]);
-  await expect(service.action(task.id, "accept")).rejects.toThrow();
-  await expect(service.action(task.id, "start")).rejects.toThrow();
+  expect(task.status).toBe("waiting-review");
+  expect(task.delivery).toBeUndefined();
+  expect(
+    task.checkpoints?.some((checkpoint) =>
+      checkpoint.id.startsWith("startup:"),
+    ),
+  ).toBe(false);
   await expect(service.action(task.id, "analyze")).rejects.toThrow(/快照/);
   expect(() => service.saveTask({ ...task, assetIds: [] }, task.id)).toThrow();
 });
@@ -797,7 +948,7 @@ test("failed development retries on its frozen branch without recreating it or d
   ).not.toContain(secret);
   configure({});
   await service.action(task.id, "retry");
-  const retried = await status(task.id, "waiting-test");
+  const retried = await status(task.id, "waiting-review");
   expect(retried.snapshot).toEqual(failed.snapshot);
   expect(git("branch", "--show-current")).toBe("feature/fixture");
   expect(retried.logs.some((l) => l.level === "error")).toBe(true);
@@ -822,7 +973,7 @@ test("failed development accepts supplemental text and evidence before retry wit
       assetIds: [asset.id],
     },
   });
-  const retried = await status(task.id, "waiting-test");
+  const retried = await status(task.id, "waiting-review");
   expect(retried.snapshot).toEqual(frozen);
   expect(retried.supplements).toEqual([
     expect.objectContaining({
@@ -1226,7 +1377,7 @@ test("one failed case retries only that case and reuses passed engineering comma
   });
   store.putTask(planned);
   await service.action(planned.id, "develop");
-  await status(planned.id, "waiting-test");
+  await status(planned.id, "waiting-review");
   const passed = {
     name: "CASE-1",
     state: "passed",
@@ -1281,6 +1432,205 @@ test("one failed case retries only that case and reuses passed engineering comma
   ).toMatchObject({ attempts: 1, reused: 1 });
   expect(recovered.runs?.filter((r) => r.stage === "test")).toHaveLength(2);
 });
+
+test("browser prerequisites stop before expensive checks and resume the same task with scoped tools", async () => {
+  const task = await developed();
+  let prepared = false;
+  let browserSession = 1;
+  const release = jest.fn();
+  const browser: BrowserProvider = {
+    action: jest.fn(async () => ({
+      url: "http://localhost:8000",
+      workspace: repository,
+      required: ["chrome" as const],
+      ready: prepared,
+      browsers: [],
+    })),
+    ready: jest.fn(async () => {
+      if (!prepared)
+        throw new ProviderFailure(
+          "environment",
+          "TEST_BROWSER_PREPARATION",
+          "请先完成测试准备",
+        );
+    }),
+    identity: () => ({ fixture: browserSession }),
+    validateCheck: () => {},
+    lease: async () => ({
+      args: [],
+      env: { STUDIO_BROWSER_TOKEN: "fixture-browser-secret" },
+      secrets: ["fixture-browser-secret"],
+      prompt: "\nScoped fixture browser available.",
+      release,
+    }),
+    close: () => {},
+  };
+  service.close();
+  service = new StudioService(
+    store,
+    credentials,
+    (t) => observed.push(t),
+    async () => {},
+    { browser },
+  );
+  await service.action(task.id, "test");
+  const pending = await status(task.id, "failed");
+  expect(pending.failure).toMatchObject({
+    code: "TEST_BROWSER_PREPARATION",
+    checkpointId: "test:browser-preparation",
+  });
+  expect(
+    pending.checkpoints?.some((c) => c.id.startsWith("test:command:")),
+  ).toBe(false);
+  expect(calls().map((c) => c.stage)).toEqual(["analysis", "development"]);
+  prepared = true;
+  configure({
+    log: "fixture-browser-secret must not persist",
+    result: {
+      summary: "Fixture page still needs confirmation",
+      checks: [
+        {
+          name: task.snapshot!.plan.testCases[0].id,
+          state: "blocked",
+          detail: "Fixture prerequisite",
+        },
+      ],
+    },
+  });
+  await service.action(task.id, "retry");
+  const recovered = await status(task.id, "failed");
+  expect(recovered.failure?.code).toBe("TEST_INCOMPLETE");
+  expect(calls().map((c) => c.stage)).toEqual([
+    "analysis",
+    "development",
+    "test",
+  ]);
+  expect(calls().at(-1)!.prompt).toContain("Scoped fixture browser available");
+  expect(
+    recovered.checkpoints?.find((c) => c.id === "test:browser-preparation"),
+  ).toMatchObject({ attempts: 2, status: "passed" });
+  expect(release).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(recovered)).not.toContain("fixture-browser-secret");
+  browserSession++;
+  prepared = false;
+  await service.action(task.id, "retry");
+  const reopened = await status(task.id, "failed");
+  expect(reopened.failure?.code).toBe("TEST_BROWSER_PREPARATION");
+  prepared = true;
+  configure({});
+  await service.action(task.id, "retry");
+  const reconfirmed = await status(task.id, "waiting-review");
+  expect(
+    reconfirmed.checkpoints?.find((c) => c.id === "test:command:test"),
+  ).toMatchObject({ attempts: 1, reused: 1 });
+  expect(calls().filter((c) => c.stage === "analysis")).toHaveLength(1);
+  expect(calls().filter((c) => c.stage === "development")).toHaveLength(1);
+  expect(calls().filter((c) => c.stage === "test")).toHaveLength(2);
+  expect(release).toHaveBeenCalledTimes(2);
+});
+
+test("test evidence and an isolated scan copy do not trip the business gate or invalidate passed checkpoints", async () => {
+  const task = await developed();
+  const passed = {
+    name: "CASE-1",
+    state: "passed",
+    detail: "independent fixture assertion",
+    evidence: [
+      {
+        kind: "command",
+        command: "fixture-check",
+        exitCode: 0,
+        summary: "fixture success",
+      },
+    ],
+  };
+  configure({
+    testFiles: {
+      "test-results/settings-copy/VERIFY.md": "fixture report",
+      "test-results/settings-copy/scan-workspace/src/app.ts": "isolated copy",
+      "test-results/settings-copy/scan-workspace/package.json": "{}",
+    },
+    result: { summary: "fixture verified", checks: [passed] },
+  });
+  await service.action(task.id, "test");
+  await until(() =>
+    ["failed", "waiting-review"].includes(store.getTask(task.id).status),
+  );
+  expect(store.getTask(task.id).failure).toBeUndefined();
+  expect(store.getTask(task.id).status).toBe("waiting-review");
+  const before = calls().length;
+  await service.action(task.id, "start");
+  // A launch failure does not invalidate the formal test result on retry.
+  await status(task.id, "failed");
+  expect(calls()).toHaveLength(before);
+  expect(store.getTask(task.id).testExecution?.conclusion).toBe("VERIFIED");
+});
+
+test.each(["blocked", "unexecuted"])(
+  "%s test cases report incomplete validation, preserve passed work, and recover in the same task",
+  async (state) => {
+    const task = await developed();
+    configure({
+      testFiles: { "test-results/fixture/raw-results.json": "{}" },
+      result: {
+        summary: "validation incomplete",
+        checks: [
+          {
+            name: "CASE-1",
+            state,
+            detail: "Browser test identity is unavailable",
+          },
+        ],
+      },
+    });
+    await service.action(task.id, "test");
+    const failed = await status(task.id, "failed");
+    expect(failed.failure).toMatchObject({
+      category: "test",
+      code: "TEST_INCOMPLETE",
+    });
+    expect(failed.testExecution).toBeUndefined();
+    expect(failed.failure?.recommendedActions.join(" ")).toContain(
+      "无需重录需求",
+    );
+    configure({});
+    await service.action(task.id, "retry");
+    const recovered = await status(task.id, "waiting-review");
+    expect(calls().map((c) => c.stage)).toEqual([
+      "analysis",
+      "development",
+      "test",
+      "test",
+    ]);
+    expect(
+      recovered.checkpoints?.find((c) => c.id === "test:command:test"),
+    ).toMatchObject({ attempts: 1, reused: 1 });
+    expect(recovered.testExecution?.conclusion).toBe("VERIFIED");
+  },
+);
+
+test.each(["verify.cjs", "package.json", "test-results/tracked-config.json"])(
+  "test modification of tracked %s still blocks the business gate",
+  async (file) => {
+    if (file.startsWith("test-results/")) {
+      fs.mkdirSync(path.dirname(path.join(repository, file)), {
+        recursive: true,
+      });
+      fs.writeFileSync(path.join(repository, file), "original");
+      git("add", file);
+      git("commit", "-m", "tracked fixture config");
+    }
+    const task = await developed();
+    configure({ testFiles: { [file]: "unauthorized mutation" } });
+    await service.action(task.id, "test");
+    const failed = await status(task.id, "failed");
+    expect(failed.failure).toMatchObject({
+      category: "policy",
+      code: "TEST_CHANGED_BUSINESS",
+    });
+    expect(failed.testExecution).toBeUndefined();
+  },
+);
 
 test("Git push failure retries delivery only and never creates another commit", async () => {
   const t = await developed();
@@ -1378,6 +1728,58 @@ test("a network turn failure cannot become a pass even when Codex exits zero wit
   ).toBe("failed");
 });
 
+test("Codex child receives scoped proxy environment without changing the Studio parent", async () => {
+  const proxy = "http://127.0.0.1:17897",
+    original = process.env.HTTPS_PROXY;
+  configure({ requireProxy: proxy });
+  const environment = jest.fn(async () => ({
+    HTTPS_PROXY: proxy,
+    HTTP_PROXY: proxy,
+  }));
+  const providers = { scm: GitSCMProvider, agentEnvironment: environment };
+  service = new StudioService(
+    store,
+    credentials,
+    (task) => observed.push(task),
+    async () => {},
+    providers,
+  );
+  const t = create();
+  await service.action(t.id, "analyze");
+  await until(() => ["ready", "failed"].includes(store.getTask(t.id).status));
+  expect(store.getTask(t.id).status).toBe("ready");
+  expect(environment).toHaveBeenCalledTimes(1);
+  expect(calls()[0]).toMatchObject({
+    proxyConfigured: true,
+    proxyMatchesExpected: true,
+  });
+  expect(process.env.HTTPS_PROXY).toBe(original);
+});
+
+test("workspace routing transport failure is NETWORK_LOST with concise recovery feedback", async () => {
+  configure({
+    eventError: "workspace routing discovery failed",
+    fail: "analysis",
+  });
+  const t = create();
+  await service.action(t.id, "analyze");
+  const failed = await status(t.id, "failed");
+  expect(failed.failure).toMatchObject({
+    category: "agent",
+    code: "NETWORK_LOST",
+  });
+  expect(failed.failure?.message).toContain("代理");
+  expect(failed.failure?.message.length).toBeLessThan(400);
+  expect(failed.failure?.recommendedActions.join(";")).not.toContain("额度");
+  expect(
+    failed.logs.some((entry) =>
+      entry.message.includes("workspace routing discovery failed"),
+    ),
+  ).toBe(true);
+  expect(calls()).toHaveLength(1);
+  expect(failed.plan).toBeUndefined();
+});
+
 function assessmentFixture(emptyLastScope: boolean) {
   return {
     summary: "设置保存提示文案变更",
@@ -1414,6 +1816,56 @@ function assessmentFixture(emptyLastScope: boolean) {
     ],
   };
 }
+
+test("read-policy rejection cannot produce a successful assessment; same task retries without development", async () => {
+  const originalFamily = process.env.CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY;
+  process.env.CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY = "fixture-parent-package";
+  try {
+    configure({ readBlocked: true });
+    const task = create();
+    await service.action(task.id, "analyze");
+    const failed = await status(task.id, "failed");
+    expect(failed.failure).toMatchObject({
+      category: "environment",
+      code: "AGENT_READ_BLOCKED",
+      checkpointId: "analysis:agent",
+    });
+    expect(failed.plan).toBeUndefined();
+    expect(failed.snapshot).toBeUndefined();
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0]).not.toHaveProperty("sandboxPackageFamily");
+    expect(process.env.CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY).toBe(
+      "fixture-parent-package",
+    );
+    configure({});
+    await service.action(task.id, "retry");
+    const recovered = await status(task.id, "ready");
+    expect(recovered.id).toBe(task.id);
+    expect(recovered.snapshot).toBeUndefined();
+    expect(calls()).toHaveLength(2);
+    expect(git("status", "--porcelain")).toBe("");
+  } finally {
+    if (originalFamily === undefined)
+      delete process.env.CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY;
+    else process.env.CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY = originalFamily;
+  }
+});
+
+test("a blocked plan is reassessed rather than reusing a previously passed Agent checkpoint", async () => {
+  const plan = {
+    ...assessmentFixture(false),
+    blockers: ["fixture source access blocked"],
+  };
+  configure({ result: plan });
+  const task = await ready();
+  expect(task.plan?.blockers).toHaveLength(1);
+  configure({ result: assessmentFixture(false) });
+  await service.action(task.id, "analyze");
+  const recovered = await status(task.id, "ready");
+  expect(calls()).toHaveLength(2);
+  expect(recovered.plan?.blockers).toEqual([]);
+  expect(recovered.snapshot).toBeUndefined();
+});
 
 test("invalid plan file scope receives one read-only correction and stops before development", async () => {
   configure({
@@ -1512,7 +1964,7 @@ test("a policy-only failure revalidates the gate without repeating the completed
   const failed = await status(t.id, "failed");
   expect(failed.failure?.category).toBe("policy");
   await service.action(t.id, "retry");
-  const recovered = await status(t.id, "waiting-test");
+  const recovered = await status(t.id, "waiting-review");
   expect(calls().map((c) => c.stage)).toEqual(["analysis", "development"]);
   expect(
     recovered.checkpoints?.find((c) => c.id === "development:agent"),

@@ -1,7 +1,22 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import { AlertCircle, CheckCircle2, FileText, X } from "lucide-react";
 import type { TaskStatus, Task } from "../shared/contracts";
 import { I18nT } from "./i18n";
+const LazyContentDrawer = lazy(() => import("./ContentDrawer"));
+
+export function PreviewDrawer(props: {
+  title: string;
+  children: ReactNode;
+  close: () => void;
+}) {
+  return (
+    <Suspense
+      fallback={<Notice>{I18nT("正在打开预览…", "Opening preview…")}</Notice>}
+    >
+      <LazyContentDrawer {...props} />
+    </Suspense>
+  );
+}
 export const activeStatuses: TaskStatus[] = [
   "queued",
   "analyzing",
@@ -137,7 +152,7 @@ export function PlanDialog({
   close: () => void;
 }) {
   return (
-    <Modal
+    <PreviewDrawer
       title={
         tab === "plan"
           ? I18nT("开发计划", "Development plan")
@@ -207,6 +222,6 @@ export function PlanDialog({
           ))}
         </>
       )}
-    </Modal>
+    </PreviewDrawer>
   );
 }

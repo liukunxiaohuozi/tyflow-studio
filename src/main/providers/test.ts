@@ -15,7 +15,10 @@ import { canReuseTestExecution, validateEvidence } from "../policy";
 import { resultJsonSchema, resultSchema } from "./agent-schemas";
 import { WorkflowEngine, fingerprint } from "../workflow/engine";
 import { ProviderFailure } from "../workflow/failures";
+import { isArtifactState } from "../test-artifacts";
 export interface TestHost {
+  validateBrowserCheck?(task: Task, check: CheckResult): void;
+  prepareBrowser?(task: Task, signal: AbortSignal): Promise<void>;
   workflow: WorkflowEngine;
   settings(): Settings;
   assertSnapshot(task: Task): Promise<RepositoryInfo>;
@@ -23,6 +26,7 @@ export interface TestHost {
   sourceSnapshot(task: Task): Promise<string>;
   planHash(task: Task): string;
   contextHash(task: Task): string;
+  browserContextHash?(task: Task): string;
   context(task: Task): string;
   agent(
     task: Task,
@@ -95,6 +99,10 @@ export class SkillTestProvider implements TestProvider {
       process.version,
       settings.agent.command,
     );
+    const browserContext = this.host.browserContextHash?.(task);
+    const executionContext = browserContext
+      ? fingerprint(contextHash, browserContext)
+      : contextHash;
     const changedFiles = (
       await changedFilesSince(project.directory, task.snapshot!.baseCommit)
     ).map((file) => file.path);
@@ -111,19 +119,29 @@ export class SkillTestProvider implements TestProvider {
       profile: "change",
     };
     const reusableExecution = task.testExecution;
+    const browserProofValid = (check: CheckResult) => {
+      try {
+        this.host.validateBrowserCheck?.(task, check);
+        return true;
+      } catch {
+        return false;
+      }
+    };
     if (
       reusableExecution &&
       canReuseTestExecution(reusableExecution, {
         sourceSnapshot,
         planHash,
         skillHash,
-        contextHash,
+        contextHash: executionContext,
       }) &&
       task.snapshot!.plan.testCases.length > 0 &&
       task.snapshot!.plan.testCases.every((c) =>
         reusableExecution.checks.some(
           (check) =>
-            check.name === `Skill · ${c.id}` && check.state === "passed",
+            check.name === `Skill · ${c.id}` &&
+            check.state === "passed" &&
+            browserProofValid({ ...check, name: c.id }),
         ),
       ) &&
       validateEvidence(
@@ -153,6 +171,17 @@ export class SkillTestProvider implements TestProvider {
       this.host.publish(task);
       return;
     }
+    if (this.host.prepareBrowser)
+      await this.host.checkpoint(
+        task,
+        "test:browser-preparation",
+        "浏览器、登录与测试范围准备",
+        "environment",
+        signal,
+        fingerprint(sourceSnapshot, contextHash),
+        () => this.host.prepareBrowser!(task, signal),
+        { reuse: false },
+      );
     task.checks = [];
     this.host.publish(task);
     // Avoid scripts such as lint:prettier that implicitly rewrite the whole repository.
@@ -183,6 +212,10 @@ export class SkillTestProvider implements TestProvider {
       contextHash,
       process.platform,
     );
+    // Browser/login changes invalidate page evidence, not source-only commands.
+    const caseKey = browserContext
+      ? fingerprint(testKey, browserContext)
+      : testKey;
     for (const script of unique) {
       this.host.log(task, "test", `执行 npm run ${script}`);
       try {
@@ -243,10 +276,11 @@ export class SkillTestProvider implements TestProvider {
       const previous = this.host.workflow.cached<CheckResult>(
         task,
         `test:case:${c.id}`,
-        testKey,
+        caseKey,
       );
       if (
         previous &&
+        browserProofValid(previous) &&
         validateEvidence([previous], project.directory, strictEvidence).every(
           (g) => g.state === "passed",
         )
@@ -269,7 +303,7 @@ export class SkillTestProvider implements TestProvider {
         "agent",
         signal,
         fingerprint(
-          testKey,
+          caseKey,
           pending.map((c) => c.id),
         ),
         async () =>
@@ -297,7 +331,7 @@ export class SkillTestProvider implements TestProvider {
           `用例 · ${c.title}`,
           "test",
           signal,
-          testKey,
+          caseKey,
           async () => {
             const check =
               valid.get(c.id) ?? generated.find((r) => r.name === c.id);
@@ -307,12 +341,19 @@ export class SkillTestProvider implements TestProvider {
                 "CASE_MISSING",
                 `测试用例覆盖不完整：${c.id}`,
               );
+            if (check.state === "blocked" || check.state === "unexecuted")
+              throw new ProviderFailure(
+                "test",
+                "TEST_INCOMPLETE",
+                `验证未完成（不是业务断言失败）：${c.id}: ${check.detail}`,
+              );
             if (check.state !== "passed")
               throw new ProviderFailure(
                 "test",
                 "CASE_FAILED",
                 `${c.id}: ${check.detail}`,
               );
+            this.host.validateBrowserCheck?.(task, check);
             const gates = validateEvidence(
               [check],
               project.directory,
@@ -344,7 +385,15 @@ export class SkillTestProvider implements TestProvider {
         task.checks.push({ ...check, name: `Skill · ${check.name}` });
       } catch (error) {
         if (signal.aborted) throw error;
-        firstFailure ??= error;
+        // A confirmed mismatch takes precedence over a missing prerequisite.
+        if (
+          !firstFailure ||
+          (firstFailure instanceof ProviderFailure &&
+            firstFailure.code === "TEST_INCOMPLETE" &&
+            (!(error instanceof ProviderFailure) ||
+              error.code !== "TEST_INCOMPLETE"))
+        )
+          firstFailure = error;
         const check = generated.find((r) => r.name === c.id);
         task.checks.push({
           ...check,
@@ -380,12 +429,17 @@ export class SkillTestProvider implements TestProvider {
             ...Object.keys(afterTestState),
           ]),
         ].filter((file) => beforeTestState[file] !== afterTestState[file]);
-        const businessChanges = touchedDuringTest.filter(
-          (file) =>
-            !/(^|\/|\\)(test|tests|__tests__|specs?)(\/|\\)|\.(test|spec)\./i.test(
+        const businessChanges = touchedDuringTest.filter((file) => {
+          if (file.replace(/\\/g, "/").startsWith("test-results/"))
+            return !isArtifactState(
+              project.directory,
               file,
-            ),
-        );
+              afterTestState[file],
+            );
+          return !/(^|\/|\\)(test|tests|__tests__|specs?)(\/|\\)|\.(test|spec)\./i.test(
+            file,
+          );
+        });
         if (businessChanges.length)
           throw new ProviderFailure(
             "policy",
@@ -407,7 +461,7 @@ export class SkillTestProvider implements TestProvider {
       sourceSnapshot: finalSourceSnapshot,
       planHash,
       skillHash,
-      contextHash,
+      contextHash: executionContext,
       completedAt: new Date().toISOString(),
       reused: false,
       checks: structuredClone(task.checks),

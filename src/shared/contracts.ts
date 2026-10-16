@@ -84,8 +84,11 @@ export interface FileAsset {
   name: string;
   size: number;
   kind: "design" | "attachment";
+  sourceType?: "prototype" | "requirements";
   entries?: string[];
   pages?: string[];
+  documents?: string[];
+  images?: string[];
   summary?: string;
   sha256: string;
 }
@@ -127,6 +130,7 @@ export interface BranchConfig {
   version: string;
 }
 export interface TaskInput {
+  workflowMode?: "quick" | "standard";
   workspaceMode?: "isolated" | "current";
   title: string;
   kind: TaskKind;
@@ -222,6 +226,8 @@ export interface AssetDiff {
   unchanged: number;
 }
 export interface Task extends TaskInput {
+  quickBaseline?: Record<string, string>;
+  browserTest?: import("./browser-test").BrowserTestConfig;
   checkpoints?: WorkflowCheckpoint[];
   failure?: TaskFailure;
   activity?: {
@@ -397,6 +403,11 @@ export type TaskAction =
   | "accept"
   | "retry";
 export interface StudioAPI {
+  browserTest?(
+    id: string,
+    action: import("./browser-test").BrowserTestAction,
+    input?: import("./browser-test").BrowserTestInput,
+  ): Promise<import("./browser-test").BrowserTestState>;
   openWorkspace?(id: string): Promise<void>;
   setupChecks?(projectId?: string): Promise<SetupCheck[]>;
   updateStatus?(): Promise<UpdateInfo>;

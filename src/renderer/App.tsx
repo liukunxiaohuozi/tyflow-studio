@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import type { Bootstrap, Settings, Task } from "../shared/contracts";
-import { activeStatuses, Modal, Notice } from "./components";
+import { activeStatuses, Notice, PreviewDrawer } from "./components";
 import { I18nT, setLanguage } from "./i18n";
 import { applyTheme } from "./theme";
 import TaskEditor from "./TaskEditor";
@@ -515,7 +515,7 @@ export default function App() {
         </main>
       </div>
       {edit && current && (
-        <Modal
+        <PreviewDrawer
           title={I18nT("执行需求快照", "Execution requirement snapshot")}
           close={() => setEdit(false)}
         >
@@ -533,7 +533,7 @@ export default function App() {
             <Plus size={16} />
             {I18nT("新建任务", "New task")}
           </button>
-        </Modal>
+        </PreviewDrawer>
       )}
       {demo && (
         <div

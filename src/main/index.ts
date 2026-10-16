@@ -23,6 +23,9 @@ import { normalizeScreenshot, screenshotThumbnail } from "./images";
 import { NotificationProvider } from "./providers/notification";
 import { setupChecks } from "./setup";
 import { UpdateManager } from "./updates";
+import { agentEnvironment } from "./agent-network";
+import { PlaywrightBrowserProvider } from "./providers/browser";
+import { browserInputSchema } from "./browser-policy";
 import packageInfo from "../../package.json";
 
 let main: BrowserWindow | undefined;
@@ -207,9 +210,30 @@ async function preview(id: string, page?: string) {
       return false;
     }
   });
-  await win.loadFile(file);
+  if (/\.(md|markdown|txt|log)$/i.test(file)) {
+    const text =
+      fs.statSync(file).size > 2 * 1024 * 1024
+        ? "文件超过 2 MB，暂不在窗口中预览；资料仍可用于评估。"
+        : fs.readFileSync(file, "utf8");
+    const escaped = text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    await win.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><meta charset="utf-8"><title>资料预览</title><pre style="white-space:pre-wrap;overflow-wrap:anywhere;margin:16px;font:14px/1.6 sans-serif">${escaped}</pre>`)}`,
+    );
+  } else await win.loadFile(file);
 }
 function bind() {
+  handle("browser-test", async (id, action, input) =>
+    service!.browserTest(
+      uuid.parse(id),
+      z
+        .enum(["status", "open", "home", "confirm", "close", "install"])
+        .parse(action),
+      browserInputSchema.parse(input ?? {}),
+    ),
+  );
   handle("open-workspace", async (id) => {
     const task = service!.store.getTask(uuid.parse(id));
     const directory =
@@ -296,7 +320,18 @@ function bind() {
             extensions:
               type === "design"
                 ? ["zip", "html", "htm"]
-                : ["png", "jpg", "jpeg", "webp", "gif", "txt", "log"],
+                : [
+                    "zip",
+                    "md",
+                    "markdown",
+                    "png",
+                    "jpg",
+                    "jpeg",
+                    "webp",
+                    "gif",
+                    "txt",
+                    "log",
+                  ],
           },
         ],
       });
@@ -597,6 +632,18 @@ else {
           await win.loadURL(url);
           win.show();
           win.focus();
+        },
+        {
+          browser: new PlaywrightBrowserProvider(
+            () => store.settings(),
+            false,
+            () =>
+              agentEnvironment((url) =>
+                session.defaultSession.resolveProxy(url),
+              ),
+          ),
+          agentEnvironment: () =>
+            agentEnvironment((url) => session.defaultSession.resolveProxy(url)),
         },
       );
       bind();

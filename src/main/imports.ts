@@ -36,6 +36,9 @@ const MAX_FILE = 50 * 1024 * 1024;
 const MAX_TOTAL = 200 * 1024 * 1024;
 const MAX_ENTRIES = 2000;
 const ATTACHMENTS = new Set([
+  ".zip",
+  ".md",
+  ".markdown",
   ".png",
   ".jpg",
   ".jpeg",
@@ -66,8 +69,33 @@ const DESIGN_FILES = new Set([
   ".otf",
   ".eot",
   ".md",
+  ".markdown",
   ".txt",
+  ".log",
 ]);
+const DOCUMENT = /\.(md|markdown|txt)$/i;
+const IMAGE = /\.(png|jpe?g|webp|gif|avif)$/i;
+function archiveName(entry: yauzl.Entry): string {
+  // Old Windows ZIP writers often omit the Unicode flag and store GBK names.
+  // Keep yauzl's Unicode-extra-field interpretation when one is present.
+  const raw = (entry as yauzl.Entry & { fileNameRaw?: Buffer }).fileNameRaw;
+  if (
+    !raw ||
+    entry.generalPurposeBitFlag & 0x800 ||
+    entry.extraFields.some((field) => field.id === 0x7075)
+  )
+    return entry.fileName;
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(raw);
+  } catch {
+    try {
+      const decoded = new TextDecoder("gb18030", { fatal: true }).decode(raw);
+      return /[\u3400-\u9fff]/.test(decoded) ? decoded : entry.fileName;
+    } catch {
+      return entry.fileName;
+    }
+  }
+}
 function safeName(name: string): string {
   if (
     !name ||
@@ -140,6 +168,20 @@ export class AssetManager {
           if (!asset.entries!.includes(page))
             throw new Error("Invalid asset page");
         });
+        for (const list of [asset.documents, asset.images]) {
+          if (list !== undefined && !Array.isArray(list))
+            throw new Error("Invalid asset manifest");
+          list?.forEach((entry) => {
+            safeName(entry);
+            if (!asset.entries!.includes(entry))
+              throw new Error("Invalid asset manifest entry");
+          });
+        }
+        if (
+          asset.sourceType !== undefined &&
+          !["prototype", "requirements"].includes(asset.sourceType)
+        )
+          throw new Error("Invalid asset source type");
         return asset;
       });
     }
@@ -262,7 +304,9 @@ export class AssetManager {
         throw new Error("Unsupported file type");
       const hash = await sha256(path);
       const prior = this.assets.find(
-        (asset) => asset.sha256 === hash && asset.kind === kind,
+        (asset) =>
+          asset.sha256 === hash &&
+          (asset.kind === kind || extension === ".zip"),
       );
       if (prior) {
         if (!result.some((asset) => asset.id === prior.id))
@@ -291,20 +335,42 @@ export class AssetManager {
                 (basename(b).toLowerCase() === "index.html" ? -1 : 0) ||
               a.localeCompare(b),
           );
-        if (kind === "design" && !pages.length)
-          throw new Error("No HTML page was found in the design package");
+        const documents = entries.filter((name) => DOCUMENT.test(name));
+        const images = entries.filter((name) => IMAGE.test(name));
+        const requirementBundle =
+          !pages.length &&
+          (documents.length > 0 || images.length > 0) &&
+          entries.every(
+            (name) =>
+              DOCUMENT.test(name) || IMAGE.test(name) || /\.log$/i.test(name),
+          );
+        if (extension === ".zip" && !pages.length && !requirementBundle)
+          throw new Error(
+            "资料包中未找到 HTML 原型或可用的需求文档、设计图片。请上传包含 Markdown、TXT、PNG、JPG 等文件的 ZIP；不支持内嵌 ZIP 或纯代码包。",
+          );
+        const effectiveKind = pages.length ? "design" : "attachment";
+        const sourceType = pages.length
+          ? "prototype"
+          : requirementBundle
+            ? "requirements"
+            : undefined;
         const asset: FileAsset = {
           id,
           name: basename(path),
           size: info.size,
-          kind,
+          kind: effectiveKind,
+          sourceType,
           entries,
-          pages: kind === "design" ? pages : undefined,
+          pages: pages.length ? pages : undefined,
+          documents: documents.length ? documents : undefined,
+          images: images.length ? images : undefined,
           sha256: hash,
           summary:
-            kind === "design"
+            effectiveKind === "design"
               ? `${entries.length} files; ${pages.length} HTML pages. File facts only; requirements must be confirmed.${extension !== ".zip" ? " Standalone HTML: external assets are not included." : ""}`
-              : `${info.size} bytes; ${extension.slice(1).toUpperCase()} attachment`,
+              : sourceType === "requirements"
+                ? `${documents.length} documents; ${images.length} design images. Requirement evidence, not an interactive HTML prototype.`
+                : `${info.size} bytes; ${extension.slice(1).toUpperCase()} attachment`,
         };
         this.assets.push(asset);
         try {
@@ -367,7 +433,7 @@ export class AssetManager {
         void (async () => {
           if (++count > MAX_ENTRIES)
             throw new Error("Design package exceeds 2000 entries");
-          const name = safeName(entry.fileName);
+          const name = safeName(archiveName(entry));
           const identity = name.replace(/\/$/, "").toLowerCase();
           if (names.has(identity))
             throw new Error("Duplicate or case-colliding ZIP entry");

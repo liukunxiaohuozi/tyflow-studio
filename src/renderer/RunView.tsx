@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   Check,
   CheckCircle2,
@@ -31,6 +31,8 @@ import { I18nT } from "./i18n";
 import AttachmentImages from "./AttachmentImages";
 import RecoveryPanel from "./RecoveryPanel";
 import SupplementDialog from "./SupplementDialog";
+import { validationPending } from "../shared/browser-test";
+const BrowserTestDrawer = lazy(() => import("./BrowserTestDrawer"));
 
 function toneOf(status: Task["status"]) {
   if (status === "accepted") return "success";
@@ -106,9 +108,11 @@ export default function RunView({
   const [busy, setBusy] = useState(false);
   const [supplementOpen, setSupplementOpen] = useState(false);
   const [startConfirmOpen, setStartConfirmOpen] = useState(false);
+  const [browserPreparationOpen, setBrowserPreparationOpen] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const running = activeStatuses.includes(task.status);
-  const tone = toneOf(task.status);
+  const incomplete = validationPending(task.failure?.code);
+  const tone = incomplete ? "warning" : toneOf(task.status);
   const logs = task.logs.filter(
     (x) =>
       filter === "all" ||
@@ -146,16 +150,34 @@ export default function RunView({
       setBusy(false);
     }
   }
+  const automated = Boolean(
+    task.autoTest ||
+    task.testExecution ||
+    task.stage === "test" ||
+    task.executionIntent?.forceTests,
+  );
   const stages =
-    task.kind === "bug"
+    (task.kind === "bug" && task.workflowMode !== "standard") ||
+    task.workflowMode === "quick"
       ? [
-          { key: "development", label: I18nT("问题修复", "Bug fix") },
-          { key: "startup", label: I18nT("启动与验收", "Launch and accept") },
+          {
+            key: "development",
+            label: I18nT("修改与局部检查", "Edit and focused checks"),
+          },
+          ...(automated
+            ? [{ key: "test", label: I18nT("自动化测试", "Testing") }]
+            : []),
+          {
+            key: "startup",
+            label: I18nT("自行查看效果", "Review in your browser"),
+          },
         ]
       : [
           { key: "analysis", label: I18nT("需求评估", "Assessment") },
           { key: "development", label: I18nT("开发实现", "Development") },
-          { key: "test", label: I18nT("自动化测试", "Testing") },
+          ...(automated
+            ? [{ key: "test", label: I18nT("自动化测试", "Testing") }]
+            : []),
           { key: "startup", label: I18nT("启动与验收", "Launch and accept") },
         ];
   const stageIndex =
@@ -170,7 +192,23 @@ export default function RunView({
   const complete = task.status === "accepted";
   const good = task.checks.filter((x) => x.state === "passed").length;
   const gates = gateChecks(task);
-  const workflowStep = task.snapshot ? 2 : task.stage === "analysis" ? 0 : 1;
+  const quickView = task.workflowMode === "quick" && !automated;
+  const workflowStep = quickView
+    ? task.snapshot
+      ? 1
+      : 0
+    : task.snapshot
+      ? 2
+      : task.stage === "analysis"
+        ? 0
+        : 1;
+  const workflowLabels = quickView
+    ? [I18nT("录入任务", "Task intake"), I18nT("修改与查看", "Edit and review")]
+    : [
+        I18nT("录入任务", "Task intake"),
+        I18nT("确认执行", "Confirm execution"),
+        I18nT("运行与验收", "Run and accept"),
+      ];
   return (
     <div className={`run-page tone-${tone}`}>
       <header className="run-hero">
@@ -180,49 +218,92 @@ export default function RunView({
           </div>
           <h1>{task.title}</h1>
           <p>
-            {task.kind === "bug"
+            {!automated
               ? I18nT(
-                  "修复完成并通过必要检查后，直接启动项目供你验收。",
-                  "After the fix passes required checks, launch the project for review.",
+                  "修改保存后由现有项目热更新，你直接在已打开的浏览器查看即可。",
+                  "Saved changes hot reload in the running project. Review them in your existing browser.",
                 )
-              : I18nT(
-                  "每个阶段都有结果，测试也计入交付进度。",
-                  "Every stage records an outcome, including testing.",
-                )}
+              : task.kind === "bug"
+                ? I18nT(
+                    "修复完成并通过必要检查后，直接启动项目供你验收。",
+                    "After the fix passes required checks, launch the project for review.",
+                  )
+                : I18nT(
+                    "每个阶段都有结果，测试也计入交付进度。",
+                    "Every stage records an outcome, including testing.",
+                  )}
           </p>
         </div>
-        <Status status={task.status} />
+        {incomplete ? (
+          <span className="badge warning">
+            {I18nT("验证未完成", "Validation incomplete")}
+          </span>
+        ) : (
+          <Status status={task.status} />
+        )}
       </header>
 
       <nav
         className="run-steps"
         aria-label={I18nT("流程步骤", "Workflow steps")}
       >
-        {[
-          I18nT("录入任务", "Task intake"),
-          I18nT("确认执行", "Confirm execution"),
-          I18nT("运行与验收", "Run and accept"),
-        ].map((label, i) => (
+        {workflowLabels.map((label, i) => (
           <div
             key={label}
             className={`step ${i === workflowStep ? "current" : i < workflowStep ? "done" : ""}`}
           >
             <span>{i < workflowStep ? <Check size={14} /> : i + 1}</span>
             {label}
-            {i < 2 && <ChevronRight size={15} className="step-separator" />}
+            {i < workflowLabels.length - 1 && (
+              <ChevronRight size={15} className="step-separator" />
+            )}
           </div>
         ))}
       </nav>
 
+      {task.snapshot && api?.browserTest && task.stage === "test" && (
+        <div className="browser-preparation-entry">
+          <button
+            className="primary"
+            disabled={running}
+            onClick={() => setBrowserPreparationOpen(true)}
+          >
+            {I18nT("测试准备 / 手动登录", "Test preparation / manual login")}
+          </button>
+          <span>
+            {I18nT(
+              "填写测试地址、打开专用浏览器并登录后，再继续页面验证。",
+              "Set the test URL, open dedicated browsers and log in before continuing page verification.",
+            )}
+          </span>
+        </div>
+      )}
+      {browserPreparationOpen && api && (
+        <Suspense
+          fallback={
+            <Notice>
+              {I18nT("正在打开测试准备…", "Opening test preparation…")}
+            </Notice>
+          }
+        >
+          <BrowserTestDrawer
+            api={api}
+            task={task}
+            onTask={onTask}
+            close={() => setBrowserPreparationOpen(false)}
+          />
+        </Suspense>
+      )}
       <RecoveryPanel task={task} />
       {task.error && !task.failure && (
         <Notice tone="error">{task.error}</Notice>
       )}
-      {task.status === "waiting-review" && (
+      {(task.status === "waiting-review" ||
+        (!task.autoTest && task.status === "waiting-test")) && (
         <Notice>
           {I18nT(
-            "开发已完成，代码检查已通过；运行时效果等待你验证。可以由 Studio 启动项目，也可以使用已经启动的项目自行验证。这个状态不是执行错误。",
-            "Development is complete and code checks passed. Runtime behavior awaits your review. Start the project with Studio or review an already-running project. This is not an execution failure.",
+            "修改已保存，开发阶段已结束。直接在你已打开的浏览器查看效果即可，无需再启动、登录或打开专用浏览器。人工查看结果不等于自动化测试通过。",
+            "Changes saved; development has ended. Review the result in your existing browser without another startup, login or dedicated browser. Manual review is not an automated test pass.",
           )}
         </Notice>
       )}
@@ -232,6 +313,13 @@ export default function RunView({
             "任务已排队，空闲后会自动执行。你可以切换到其他任务，也可以停止此任务。",
             "Task queued and will run when a slot is free. You can switch tasks or stop this task.",
           )}
+        </Notice>
+      )}
+      {!task.workspace && task.snapshot && (
+        <Notice>
+          {I18nT("实际修改目录", "Edited directory")}：
+          <span className="mono">{task.snapshot.project.directory}</span> ·{" "}
+          {task.snapshot.branch.name || task.snapshot.branch.base}
         </Notice>
       )}
       {task.workspace && (
@@ -294,7 +382,11 @@ export default function RunView({
                 )}
               </div>
               <div>
-                <h2>{statusLabel(task.status)}</h2>
+                <h2>
+                  {incomplete
+                    ? I18nT("验证未完成", "Validation incomplete")
+                    : statusLabel(task.status)}
+                </h2>
                 <p>
                   {simulated
                     ? I18nT(
@@ -308,24 +400,26 @@ export default function RunView({
                 </p>
               </div>
             </div>
-            <div className="run-status-actions">
-              <button
-                className="text-button"
-                disabled={!task.plan}
-                onClick={() => setDialog("plan")}
-              >
-                <FileText size={14} />
-                {I18nT("预览开发计划", "Preview plan")}
-              </button>
-              <button
-                className="text-button"
-                disabled={!task.plan}
-                onClick={() => setDialog("tests")}
-              >
-                <FlaskConical size={14} />
-                {I18nT("查看测试用例", "View test cases")}
-              </button>
-            </div>
+            {!quickView && (
+              <div className="run-status-actions">
+                <button
+                  className="text-button"
+                  disabled={!task.plan}
+                  onClick={() => setDialog("plan")}
+                >
+                  <FileText size={14} />
+                  {I18nT("预览开发计划", "Preview plan")}
+                </button>
+                <button
+                  className="text-button"
+                  disabled={!task.plan}
+                  onClick={() => setDialog("tests")}
+                >
+                  <FlaskConical size={14} />
+                  {I18nT("查看测试用例", "View test cases")}
+                </button>
+              </div>
+            )}
           </div>
 
           <div
@@ -365,7 +459,10 @@ export default function RunView({
                 ? I18nT("执行必要修复检查", "Required fix checks")
                 : task.autoTest
                   ? I18nT("已开启自动化测试", "Automated testing enabled")
-                  : I18nT("手动介入测试", "Manual test intervention")}
+                  : I18nT(
+                      "自行浏览器查看；自动化测试未启用",
+                      "Review in your browser; automated testing off",
+                    )}
             </span>
           </div>
 
@@ -373,9 +470,11 @@ export default function RunView({
             <div className="section-heading">
               <h2>
                 <FlaskConical size={16} />
-                {task.kind === "bug"
-                  ? I18nT("修复检查", "Fix checks")
-                  : I18nT("测试结果", "Test results")}
+                {!automated
+                  ? I18nT("开发检查", "Development checks")
+                  : task.kind === "bug"
+                    ? I18nT("修复检查", "Fix checks")
+                    : I18nT("测试结果", "Test results")}
               </h2>
               <span className="muted">
                 {good}/{task.checks.length}{" "}
@@ -420,7 +519,15 @@ export default function RunView({
             )}
           </div>
           {gates.length > 0 && (
-            <div className="run-checks">
+            <details
+              className="run-checks"
+              open={
+                !quickView || gates.some((check) => check.state !== "passed")
+              }
+            >
+              <summary>
+                {I18nT("安全与范围检查详情", "Safety and scope check details")}
+              </summary>
               <div className="section-heading">
                 <h2>
                   <ShieldCheck size={16} />
@@ -453,7 +560,7 @@ export default function RunView({
                   </details>
                 ))}
               </div>
-            </div>
+            </details>
           )}
         </section>
 
@@ -754,6 +861,7 @@ export default function RunView({
                 </>
               )}
               {task.status === "failed" &&
+                !incomplete &&
                 task.stage === "test" &&
                 task.snapshot && (
                   <button
@@ -779,41 +887,44 @@ export default function RunView({
                   {I18nT("只重试 Git 推送", "Retry Git delivery only")}
                 </button>
               )}
-              {task.status === "waiting-test" && task.kind !== "bug" && (
-                <button
-                  className="primary"
-                  disabled={busy}
-                  onClick={() => void action("test")}
-                >
-                  <FlaskConical size={16} />
-                  {I18nT("自动化测试介入", "Run automated testing")}
-                </button>
-              )}
-              {task.status === "waiting-review" && (
-                <button
-                  className="primary"
-                  disabled={busy}
-                  onClick={() => setStartConfirmOpen(true)}
-                >
-                  <Play size={15} />
-                  {I18nT("启动项目进入验证", "Start project for review")}
-                </button>
-              )}
-              {["waiting-review", "review", "accepted"].includes(
-                task.status,
-              ) && (
-                <button
-                  onClick={() =>
-                    api
-                      ?.openTarget(task.id)
-                      .catch((e) => report(e.message, true))
-                  }
-                >
-                  <ExternalLink size={16} />
-                  {I18nT("打开开发页面", "Open development page")}
-                </button>
-              )}
+              {["waiting-test", "waiting-review"].includes(task.status) &&
+                !task.testExecution && (
+                  <button disabled={busy} onClick={() => void action("test")}>
+                    <FlaskConical size={16} />
+                    {I18nT(
+                      "自动化测试介入（可选）",
+                      "Run automated testing (optional)",
+                    )}
+                  </button>
+                )}
+              {task.status === "waiting-review" &&
+                (automated || task.workspace) && (
+                  <button
+                    className="primary"
+                    disabled={busy}
+                    onClick={() => setStartConfirmOpen(true)}
+                  >
+                    <Play size={15} />
+                    {I18nT("启动项目进入验证", "Start project for review")}
+                  </button>
+                )}
+              {(automated || task.workspace) &&
+                ["waiting-review", "review", "accepted"].includes(
+                  task.status,
+                ) && (
+                  <button
+                    onClick={() =>
+                      api
+                        ?.openTarget(task.id)
+                        .catch((e) => report(e.message, true))
+                    }
+                  >
+                    <ExternalLink size={16} />
+                    {I18nT("打开开发页面", "Open development page")}
+                  </button>
+                )}
               {!simulated &&
+                (automated || task.workspace) &&
                 ["waiting-review", "review", "accepted"].includes(
                   task.status,
                 ) && (
@@ -847,7 +958,8 @@ export default function RunView({
                     {I18nT("在浏览器验证", "Review in browser")}
                   </button>
                 )}
-              {["waiting-review", "review"].includes(task.status) && (
+              {(["waiting-review", "review"].includes(task.status) ||
+                (!task.autoTest && task.status === "waiting-test")) && (
                 <button
                   className="primary"
                   disabled={busy}
@@ -856,7 +968,10 @@ export default function RunView({
                   <CheckCircle2 size={16} />
                   {busy
                     ? I18nT("正在提交并推送…", "Committing and pushing…")
-                    : I18nT("验收并提交代码", "Accept, commit and push")}
+                    : I18nT(
+                        "我已验证，提交并推送代码",
+                        "Reviewed: commit and push code",
+                      )}
                 </button>
               )}
             </>

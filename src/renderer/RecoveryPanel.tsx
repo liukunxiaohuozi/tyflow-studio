@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FailureCategory, Task } from "../shared/contracts";
 import { I18nT } from "./i18n";
 import { Notice, activeStatuses } from "./components";
+import { validationPending } from "../shared/browser-test";
 const categoryLabel = (category: FailureCategory) =>
   ({
     environment: I18nT("环境失败", "Environment failure"),
@@ -15,6 +16,7 @@ const categoryLabel = (category: FailureCategory) =>
 export default function RecoveryPanel({ task }: { task: Task }) {
   const [now, setNow] = useState(Date.now());
   const running = activeStatuses.includes(task.status);
+  const incomplete = validationPending(task.failure?.code);
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -34,9 +36,18 @@ export default function RecoveryPanel({ task }: { task: Task }) {
       aria-label={I18nT("阶段恢复", "Stage recovery")}
     >
       {task.failure && (
-        <Notice tone={task.failure.category === "interrupted" ? "info" : "error"}>
+        <Notice
+          tone={
+            incomplete || task.failure.category === "interrupted"
+              ? "info"
+              : "error"
+          }
+        >
           <strong>
-            {categoryLabel(task.failure.category)} · {task.failure.code}
+            {incomplete
+              ? I18nT("验证未完成", "Validation incomplete")
+              : categoryLabel(task.failure.category)}{" "}
+            · {task.failure.code}
           </strong>
           <p>{task.failure.message}</p>
           <p>

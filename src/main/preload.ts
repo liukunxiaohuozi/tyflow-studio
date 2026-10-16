@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { StudioAPI, Task } from "../shared/contracts";
 const api: StudioAPI = {
+  browserTest: (id, action, input) =>
+    ipcRenderer.invoke("studio:browser-test", id, action, input),
   openWorkspace: (id) => ipcRenderer.invoke("studio:open-workspace", id),
   setupChecks: (id) => ipcRenderer.invoke("studio:setup-checks", id),
   updateStatus: () => ipcRenderer.invoke("studio:update-status"),

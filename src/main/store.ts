@@ -175,7 +175,14 @@ export class Store {
       )
         throw new Error("执行快照已冻结，请新建后续任务");
       const sourceChanged =
-        ["title", "description", "projectId", "assetIds", "kind"].some(
+        [
+          "title",
+          "description",
+          "projectId",
+          "assetIds",
+          "kind",
+          "workflowMode",
+        ].some(
           (k) =>
             JSON.stringify(input[k as keyof TaskInput]) !==
             JSON.stringify(previous[k as keyof TaskInput]),

@@ -69,7 +69,7 @@ export async function setupChecks(
         env,
         timeout: 15_000,
       });
-      return `${resolved.version} · ${login.trim() || "登录状态检查通过"}`;
+      return `${resolved.version} · ${login.trim() || "登录状态检查通过"}（仅检查执行与登录状态，不代表模型服务已连通）`;
     },
   );
   await check(

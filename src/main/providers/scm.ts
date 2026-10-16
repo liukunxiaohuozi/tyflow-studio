@@ -28,6 +28,7 @@ import {
 import { join, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { killTree } from "../process";
+import { isTestArtifact } from "../test-artifacts";
 import type {
   RepositoryInfo,
   BranchConfig,
@@ -664,11 +665,42 @@ export async function commitAndPush(
         );
       let commit = existingCommit;
       if (commit) {
-        if (info.commit !== commit || info.dirty)
+        if (
+          info.commit !== commit ||
+          (info.dirty &&
+            (await changedFilesSince(cwd, info.commit)).some(
+              (file) => !isTestArtifact(cwd, file.path, file.changeType),
+            ))
+        )
           throw new Error("本地提交后工作区又发生变化，请先核对改动再重试推送");
       } else {
         if (!info.dirty) throw new Error("本次开发没有可提交的代码修改");
-        await run(cwd, ["add", "--all"]);
+        const changes = await changedFilesSince(cwd, info.commit);
+        if (
+          changes.some((file) =>
+            isTestArtifact(cwd, file.path, file.changeType),
+          )
+        ) {
+          // Keep local reports and scan copies out of delivery. Tracked files in
+          // the same directory are not evidence and must still be staged/reviewed.
+          await run(cwd, ["add", "--all", "--", ".", ":(exclude)test-results"]);
+          const protectedFiles = changes.filter(
+            (file) =>
+              file.path.replace(/\\/g, "/").startsWith("test-results/") &&
+              !isTestArtifact(cwd, file.path, file.changeType),
+          );
+          for (let i = 0; i < protectedFiles.length; i += 20)
+            await run(cwd, [
+              "add",
+              "--all",
+              "--",
+              ...protectedFiles
+                .slice(i, i + 20)
+                .map((file) => `:(literal)${file.path}`),
+            ]);
+        } else {
+          await run(cwd, ["add", "--all"]);
+        }
         const staged = await run(cwd, ["diff", "--cached", "--name-only"]);
         if (!staged.trim()) throw new Error("本次开发没有可提交的代码修改");
         const identity = [

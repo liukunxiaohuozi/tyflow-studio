@@ -47,15 +47,25 @@ process.stdin.on("end", () => {
       stage,
       cwd: process.cwd(),
       codexHome: process.env.CODEX_HOME,
+      sandboxPackageFamily: process.env.CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY,
+      proxyConfigured: Boolean(process.env.HTTPS_PROXY || process.env.https_proxy),
+      proxyMatchesExpected: config.requireProxy ? (process.env.HTTPS_PROXY || process.env.https_proxy) === config.requireProxy : undefined,
     }) + "\n",
   );
+  if (config.readBlocked) console.error('ERROR codex_core::tools::router: exec_command failed: CreateProcess Rejected: blocked by policy');
+  if (config.requireProxy && (process.env.HTTPS_PROXY || process.env.https_proxy) !== config.requireProxy) {
+    console.error("workspace routing discovery failed");
+    process.exitCode = 1;
+    return;
+  }
   console.log(
     JSON.stringify({
       type: "item.completed",
       item: { text: config.log || "fixture agent evidence" },
     }),
   );
-  setTimeout(() => {
+  setTimeout(async () => {
+    try {
     if (config.eventError) console.log(JSON.stringify({ type: "turn.failed", error: { message: config.eventError } }));
     if (config.fail === stage) {
       console.error("fixture deliberate failure");
@@ -63,6 +73,20 @@ process.stdin.on("end", () => {
       return;
     }
     if (config.missingOutput) return;
+    if (stage === "development") {
+      for (const [file, contents] of Object.entries(config.developmentFiles || {})) {
+        const target = path.join(process.cwd(), file);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, contents);
+      }
+    }
+    if (stage === "test") {
+      for (const [file, contents] of Object.entries(config.testFiles || {})) {
+        const target = path.join(process.cwd(), file);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, contents);
+      }
+    }
     const results = {
       analysis: {
         summary: "Fixture assessment",
@@ -112,7 +136,25 @@ process.stdin.on("end", () => {
       },
     };
     const stageCalls = fs.readFileSync(path.join(directory, "calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((call) => call.stage === stage).length;
+    if (stage === "test" && config.browserTest) {
+      const setting = args.find((arg) => arg.startsWith("mcp_servers.studio_browser.url="));
+      if (!setting || !process.env.STUDIO_BROWSER_TOKEN) throw new Error("Fixture did not receive scoped browser capability");
+      const endpoint = JSON.parse(setting.slice(setting.indexOf("=") + 1));
+      let rpcId=0;
+      const tool = async(name,argumentsValue) => {
+        const response=await fetch(endpoint,{method:"POST",headers:{Authorization:`Bearer ${process.env.STUDIO_BROWSER_TOKEN}`,"Content-Type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:++rpcId,method:"tools/call",params:{name,arguments:argumentsValue}})});
+        const body=await response.json();
+        if(!response.ok||body.result?.isError)throw new Error(body.result?.content?.[0]?.text||"Fixture browser operation failed");
+        return JSON.parse(body.result.content[0].text);
+      };
+      await tool("browser_fill",{role:"textbox",name:"Setting value",text:"controlled"});
+      await tool("browser_click",{role:"button",name:"Save"});
+      const assertion=await tool("browser_assert",{caseId:"CASE-001",selector:"#result",assertion:"text",expected:"Fixture saved: controlled"});
+      if(!assertion.passed)throw new Error("Fixture real browser assertion failed");
+      results.test={summary:"Fixture browser verification",checks:[{name:"CASE-001",state:"passed",detail:"Real fixture browser save assertion",evidence:[{kind:"dom",summary:"Actual browser assertion",...assertion.evidence}]}]};
+    }
     const sequenceResult = stage === "analysis" && config.analysisResults?.[stageCalls - 1];
     fs.writeFileSync(output, JSON.stringify(sequenceResult || config.result || results[stage]));
+    } catch(error) { console.error(error.message);process.exitCode=1; }
   }, config.delay || 0);
 });

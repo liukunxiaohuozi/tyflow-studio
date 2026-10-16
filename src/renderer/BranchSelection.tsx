@@ -34,6 +34,51 @@ export default function BranchSelection({
         )
       : undefined;
   const setBranch = (branch: TaskInput["branch"]) => patch({ branch });
+  if (input.workflowMode === "quick")
+    return (
+      <div className="branch-selection">
+        <Notice>
+          {I18nT(
+            "直接修改当前项目目录与当前分支，不拉取、不切分支、不新建工作区；保存后由现有项目热更新。需要新分支或并行开发时请选择标准流程。",
+            "Edit the current project and branch without pulling, switching branches or creating a workspace. The running project hot reloads saved files. Choose standard flow for a new branch or parallel work.",
+          )}
+        </Notice>
+        <p className="mono">
+          {
+            settings.projects.find((project) => project.id === input.projectId)
+              ?.directory
+          }{" "}
+          · {repo?.branch || "—"}
+        </p>
+        {repo?.dirty && (
+          <Notice>
+            {I18nT(
+              "已有未提交修改会保留；开始前会请你确认，不会清空工作区。",
+              "Existing uncommitted changes will be preserved; confirmation is required before starting.",
+            )}
+          </Notice>
+        )}
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={input.autoTest}
+            disabled={disabled}
+            onChange={(event) => patch({ autoTest: event.target.checked })}
+          />
+          <span>
+            <strong>
+              {I18nT("自动化测试介入（可选）", "Automated testing (optional)")}
+            </strong>
+            <small>
+              {I18nT(
+                "默认不启用。修改结束后直接由你在现有浏览器查看，无需额外登录或打开测试浏览器。",
+                "Off by default. Review the edit in your existing browser; no extra login or test browser required.",
+              )}
+            </small>
+          </span>
+        </label>
+      </div>
+    );
   return (
     <div className="branch-selection">
       <div className="inline-section-heading">
@@ -231,7 +276,7 @@ export default function BranchSelection({
           )}
         </Notice>
       )}
-      {input.kind !== "bug" && (
+      {(input.kind !== "bug" || input.workflowMode) && (
         <div className="test-setting">
           <label className="checkbox">
             <input

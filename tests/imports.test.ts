@@ -6,7 +6,7 @@ import { AssetManager } from "../src/main/imports";
 // Minimal stored ZIP fixtures with valid central-directory metadata and CRC32.
 function zip(
   entries: {
-    name: string;
+    name: string | Buffer;
     body: string;
     mode?: number;
     declaredSize?: number;
@@ -16,7 +16,8 @@ function zip(
   const central: Buffer[] = [];
   let offset = 0;
   for (const entry of entries) {
-    const name = Buffer.from(entry.name);
+    const name =
+      typeof entry.name === "string" ? Buffer.from(entry.name) : entry.name;
     const body = Buffer.from(entry.body);
     let crc = 0xffffffff;
     for (const byte of body) {
@@ -28,6 +29,7 @@ function zip(
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50);
     local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(typeof entry.name === "string" ? 0x800 : 0, 6);
     local.writeUInt32LE(crc, 14);
     local.writeUInt32LE(body.length, 18);
     local.writeUInt32LE(entry.declaredSize ?? body.length, 22);
@@ -36,6 +38,7 @@ function zip(
     c.writeUInt32LE(0x02014b50);
     c.writeUInt16LE(0x0314, 4);
     c.writeUInt16LE(20, 6);
+    c.writeUInt16LE(typeof entry.name === "string" ? 0x800 : 0, 8);
     c.writeUInt32LE(crc, 16);
     c.writeUInt32LE(body.length, 20);
     c.writeUInt32LE(entry.declaredSize ?? body.length, 24);
@@ -145,10 +148,92 @@ test("deduplicates same content and validates attachment extensions", async () =
   await writeFile(bad, "executable");
   await expect(manager.importFiles([bad], "attachment")).rejects.toThrow();
 });
-test("rejects design bundles with no HTML and oversized standalone files", async () => {
+test("recognizes documents and design images without requiring an HTML prototype", async () => {
+  const input = join(root, "requirements.zip");
+  await writeFile(
+    input,
+    zip([
+      {
+        name: "handoff/requirement.md",
+        body: "# Requirement\nUse the approved design.",
+      },
+      { name: "handoff/details.txt", body: "Interaction rules" },
+      { name: "handoff/figma.png", body: "image fixture" },
+    ]),
+  );
+  const [asset] = await manager.importFiles([input], "design");
+  expect(asset).toMatchObject({
+    kind: "attachment",
+    sourceType: "requirements",
+    documents: ["handoff/requirement.md", "handoff/details.txt"],
+    images: ["handoff/figma.png"],
+  });
+  expect(asset.pages).toBeUndefined();
+  expect(new AssetManager(join(root, "assets")).get(asset.id)).toEqual(asset);
+  expect(
+    await readFile(
+      manager.filePath(asset.id, "handoff/requirement.md"),
+      "utf8",
+    ),
+  ).toContain("# Requirement");
+  expect((await manager.importFiles([input], "design"))[0].id).toBe(asset.id);
+  expect((await manager.importFiles([input], "attachment"))[0].id).toBe(
+    asset.id,
+  );
+});
+
+test("imports loose requirement documents and keeps prototype archives classified as designs", async () => {
+  const input = join(root, "requirement.md");
+  await writeFile(input, "# Requirement");
+  expect((await manager.importFiles([input], "attachment"))[0]).toMatchObject({
+    sourceType: "requirements",
+    documents: ["requirement.md"],
+  });
+  const prototype = join(root, "prototype.zip");
+  await writeFile(
+    prototype,
+    zip([{ name: "nested/index.html", body: "<h1>Prototype</h1>" }]),
+  );
+  expect(
+    (await manager.importFiles([prototype], "attachment"))[0],
+  ).toMatchObject({
+    kind: "design",
+    sourceType: "prototype",
+    pages: ["nested/index.html"],
+  });
+});
+
+test("preserves UTF-8 and legacy Windows GBK Chinese requirement filenames", async () => {
+  const input = join(root, "chinese.zip");
+  await writeFile(
+    input,
+    zip([
+      { name: "设计稿/详情.png", body: "fixture" },
+      { name: Buffer.from("d0e8c7f32e6d64", "hex"), body: "# Requirement" },
+    ]),
+  );
+  const [asset] = await manager.importFiles([input], "attachment");
+  expect(asset.entries).toEqual(["设计稿/详情.png", "需求.md"]);
+  expect(await readFile(manager.filePath(asset.id, "需求.md"), "utf8")).toBe(
+    "# Requirement",
+  );
+});
+
+test("rejects empty or code-only requirement archives without weakening ZIP safety", async () => {
   const input = join(root, "empty.zip");
-  await writeFile(input, zip([{ name: "readme.md", body: "text only" }]));
+  await writeFile(input, zip([]));
   await expect(manager.importFiles([input], "design")).rejects.toThrow();
+  await writeFile(input, zip([{ name: "script.js", body: "do not execute" }]));
+  await expect(manager.importFiles([input], "design")).rejects.toThrow();
+  await writeFile(
+    input,
+    zip([
+      { name: "requirement.md", body: "notes" },
+      { name: "nested.zip", body: "not a supported handoff" },
+    ]),
+  );
+  await expect(manager.importFiles([input], "design")).rejects.toThrow();
+  expect(manager.all()).toEqual([]);
 });
 test("compares relative paths and actual content for design pages and resources", async () => {
   const beforePath = join(root, "before.zip");

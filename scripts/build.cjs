@@ -7,7 +7,7 @@ Promise.all([
     format: "cjs",
     target: "node22",
     outfile: "dist/main/index.cjs",
-    external: ["electron", "yauzl"],
+    external: ["electron", "yauzl", "playwright-core"],
     sourcemap: true,
   }),
   esbuild.build({

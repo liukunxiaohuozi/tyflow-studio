@@ -165,6 +165,7 @@ export function canReuseTestExecution(
 const inputSchema = z
   .object({
     workspaceMode: z.enum(["isolated", "current"]).optional(),
+    workflowMode: z.enum(["quick", "standard"]).optional(),
     title: z.string().min(1).max(160),
     kind: z.enum(["design", "text", "bug"]),
     size: z.enum(["small", "medium", "large"]),
@@ -213,7 +214,7 @@ export function canAct(task: Task, action: TaskAction) {
     fix: ["draft", "ready", "failed", "stopped"],
     analyze: ["draft", "ready", "failed", "stopped"],
     develop: ["ready"],
-    test: ["waiting-test"],
+    test: ["waiting-test", "waiting-review"],
     start: ["waiting-review", "review"],
     pause: ["queued", "analyzing", "developing", "testing", "starting"],
     stop: ["queued", "analyzing", "developing", "testing", "starting"],
@@ -229,7 +230,7 @@ export function canAct(task: Task, action: TaskAction) {
       "review",
       "failed",
     ],
-    accept: ["waiting-review", "review"],
+    accept: ["waiting-review", "review", ...(!task.autoTest ? ["waiting-test"] : [])],
     retry: [
       "failed",
       "stopped",
@@ -250,8 +251,18 @@ export function canAct(task: Task, action: TaskAction) {
     throw new Error(`当前状态 ${task.status} 不能执行 ${action}`);
   if (action === "repair" && (!task.snapshot || task.stage !== "test"))
     throw new Error("只有测试失败的已执行任务可修复并重测");
-  if (action === "fix" && task.kind !== "bug")
+  if (action === "fix" && task.kind !== "bug" && task.workflowMode !== "quick")
     throw new Error("直接修复仅适用于 Bug 任务");
+  if (
+    action === "fix" &&
+    task.workflowMode === "quick" &&
+    (task.kind === "design" ||
+      task.workspaceMode === "isolated" ||
+      task.branch.mode !== "existing")
+  )
+    throw new Error(
+      "轻量修改使用当前项目目录和当前分支；设计或隔离开发请选择标准流程",
+    );
   if (action === "fix" && task.snapshot)
     throw new Error("已进入执行阶段的 Bug 请从当前失败阶段重试");
   if (action === "develop" && (!task.plan || task.plan.blockers.length))

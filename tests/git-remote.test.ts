@@ -84,6 +84,11 @@ test("records a local delivery commit before push and retries without a duplicat
   const unavailable = path.join(root, "unavailable.git");
   const deliveryProject = { ...project, repository: unavailable };
   fs.writeFileSync(path.join(local, "delivery.txt"), "ready");
+  fs.mkdirSync(path.join(local, "test-results/run"), { recursive: true });
+  fs.writeFileSync(
+    path.join(local, "test-results/run/VERIFY.md"),
+    "local evidence kept on retry",
+  );
   let committed: { commit: string; branch: string; remote: string } | undefined;
   await expect(
     commitAndPush(
@@ -101,6 +106,18 @@ test("records a local delivery commit before push and retries without a duplicat
   expect(committed?.commit).toBe(git(local, "rev-parse", "HEAD"));
   expect(git(local, "rev-list", "--count", "HEAD")).toBe("2");
   git(root, "init", "--bare", "--initial-branch=main", unavailable);
+  fs.writeFileSync(path.join(local, "delivery.txt"), "unexpected source drift");
+  await expect(
+    commitAndPush(
+      deliveryProject,
+      undefined,
+      "main",
+      "deliver fixture",
+      { name: "Fixture", email: "fixture@example.invalid" },
+      committed?.commit,
+    ),
+  ).rejects.toThrow("工作区又发生变化");
+  fs.writeFileSync(path.join(local, "delivery.txt"), "ready");
   const delivered = await commitAndPush(
     deliveryProject,
     undefined,
@@ -114,6 +131,46 @@ test("records a local delivery commit before push and retries without a duplicat
   expect(git(unavailable, "rev-parse", "refs/heads/main")).toBe(
     committed?.commit,
   );
+});
+
+test("delivery retains local evidence without committing scan copies and still stages tracked files in the evidence root", async () => {
+  fs.mkdirSync(path.join(local, "test-results"));
+  fs.writeFileSync(path.join(local, "test-results/tracked.json"), "old");
+  git(local, "add", "test-results/tracked.json");
+  git(local, "commit", "-m", "tracked fixture");
+  fs.writeFileSync(
+    path.join(local, "test-results/tracked.json"),
+    "reviewed update",
+  );
+  fs.mkdirSync(path.join(local, "test-results/run/scan-workspace/src"), {
+    recursive: true,
+  });
+  fs.writeFileSync(
+    path.join(local, "test-results/run/scan-workspace/src/app.ts"),
+    "copy only",
+  );
+  fs.writeFileSync(
+    path.join(local, "test-results/run/VERIFY.md"),
+    "local evidence",
+  );
+  fs.writeFileSync(path.join(local, "delivery.txt"), "business update");
+  const delivered = await commitAndPush(
+    project,
+    undefined,
+    "main",
+    "deliver without evidence",
+    { name: "Fixture", email: "fixture@example.invalid" },
+  );
+  expect(
+    git(local, "show", "--format=", "--name-only", delivered.commit)
+      .split("\n")
+      .sort(),
+  ).toEqual(["delivery.txt", "test-results/tracked.json"]);
+  expect(git(upstream, "rev-parse", "refs/heads/main")).toBe(delivered.commit);
+  expect(
+    fs.readFileSync(path.join(local, "test-results/run/VERIFY.md"), "utf8"),
+  ).toBe("local evidence");
+  expect(git(local, "status", "--porcelain")).toContain("?? test-results/run/");
 });
 
 test("passes the Studio runtime environment through git commit hooks", async () => {
@@ -138,9 +195,7 @@ test("passes the Studio runtime environment through git commit hooks", async () 
   );
 
   expect(delivered.commit).toBe(git(local, "rev-parse", "HEAD"));
-  expect(git(upstream, "rev-parse", "refs/heads/main")).toBe(
-    delivered.commit,
-  );
+  expect(git(upstream, "rev-parse", "refs/heads/main")).toBe(delivered.commit);
 });
 
 test("fetches every remote branch without letting conflicting remote tags block synchronization", async () => {

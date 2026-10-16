@@ -6,8 +6,17 @@ import { resolveCodex } from "../codex";
 import { ProcessExecutionError, runCommand } from "../process";
 import { EvidenceStore } from "../evidence";
 import { ProviderFailure } from "../workflow/failures";
+import { agentNetworkMessage, isAgentNetworkFailure } from "../agent-network";
+import { redact } from "../policy";
+import {
+  codexExecutionArgs,
+  standaloneCodexEnvironment,
+  isReadExecutionBlocked,
+  readExecutionBlockedMessage,
+} from "../agent-execution";
 
 export interface AgentRequest {
+  tools?: { args: string[]; env: NodeJS.ProcessEnv; secrets: string[] };
   taskId: string;
   directory: string;
   projectName: string;
@@ -28,11 +37,12 @@ export class CodexAgentProvider implements AgentProvider {
     private settings: () => Settings,
     private evidence: EvidenceStore,
     private sanitize: (value: unknown) => unknown,
+    private environment: () => Promise<NodeJS.ProcessEnv> = async () => ({}),
   ) {}
   clear(taskId: string) {
     this.cache.delete(taskId);
   }
-  private async compatibleAgent(request: AgentRequest) {
+  private async compatibleAgent(request: AgentRequest, env: NodeJS.ProcessEnv) {
     const cached = this.cache.get(request.taskId);
     if (cached) return cached;
     try {
@@ -44,11 +54,7 @@ export class CodexAgentProvider implements AgentProvider {
         await runCommand(agent.command, ["login", "status"], {
           cwd: request.directory,
           signal: request.signal,
-          env: {
-            CODEX_HOME:
-              process.env.CODEX_HOME?.trim() ||
-              path.join(os.homedir(), ".codex"),
-          },
+          env,
           timeout: 15_000,
         });
       } catch (error) {
@@ -72,6 +78,12 @@ export class CodexAgentProvider implements AgentProvider {
     }
   }
   async invoke(request: AgentRequest) {
+    const secrets = request.tools?.secrets ?? [];
+    const log = request.log;
+    request = {
+      ...request,
+      log: (message, error) => log(redact(message, secrets), error),
+    };
     const settings = this.settings();
     const idle = settings.execution?.agentIdleTimeoutMs ?? 180_000;
     const directory = this.evidence.runDirectory(request.taskId);
@@ -82,19 +94,29 @@ export class CodexAgentProvider implements AgentProvider {
       `Codex · ${request.stage === "analysis" ? "只读评估" : "工作区执行"} · ${request.projectName}`,
     );
     let eventFailure = "";
+    let readBlocked = false;
     try {
-      const agent = await this.compatibleAgent(request);
+      const networkEnvironment = await this.environment();
+      const env = {
+        ...networkEnvironment,
+        ...standaloneCodexEnvironment(),
+        CODEX_HOME:
+          process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"),
+        ...request.tools?.env,
+      };
+      if (Object.keys(networkEnvironment).some((key) => /proxy/i.test(key)))
+        request.log(
+          "已为 Codex 子进程应用系统代理；未修改系统配置或其他项目连接。",
+        );
+      const agent = await this.compatibleAgent(request, env);
       request.log(
         `${agent.version} · ${agent.command.executable} ${agent.command.args.join(" ")}${agent.fallback ? " · 已跳过旧版 CLI，使用检测到的最新兼容版本" : ""}`,
       );
       await runCommand(
         agent.command,
         [
-          "exec",
-          "--ignore-user-config",
-          ...(request.stage === "analysis"
-            ? ["--sandbox", "read-only"]
-            : ["--approve-for-me"]),
+          ...codexExecutionArgs(request.stage),
+          ...(request.tools?.args ?? []),
           "--json",
           "--ephemeral",
           "--cd",
@@ -109,11 +131,7 @@ export class CodexAgentProvider implements AgentProvider {
           cwd: request.directory,
           signal: request.signal,
           input: request.prompt,
-          env: {
-            CODEX_HOME:
-              process.env.CODEX_HOME?.trim() ||
-              path.join(os.homedir(), ".codex"),
-          },
+          env,
           timeout: settings.execution?.agentTimeoutMs ?? 30 * 60_000,
           idleTimeout: idle,
           idleWarningAfter: Math.min(60_000, Math.floor(idle / 2)),
@@ -127,6 +145,13 @@ export class CodexAgentProvider implements AgentProvider {
               const event = JSON.parse(line);
               if (event.type === "item.completed" && event.item) {
                 const item = event.item;
+                if (
+                  request.stage === "analysis" &&
+                  item.type === "command_execution" &&
+                  item.status === "failed" &&
+                  isReadExecutionBlocked(item.aggregated_output ?? "")
+                )
+                  readBlocked = true;
                 request.log(
                   typeof item.text === "string"
                     ? item.text
@@ -143,6 +168,13 @@ export class CodexAgentProvider implements AgentProvider {
                 request.log(eventFailure, true);
               }
             } catch {
+              if (
+                request.stage === "analysis" &&
+                error &&
+                /exec_command failed|sandbox provisioning failed/i.test(line) &&
+                isReadExecutionBlocked(line)
+              )
+                readBlocked = true;
               if (line.trim()) request.log(line, error);
             }
           },
@@ -153,12 +185,18 @@ export class CodexAgentProvider implements AgentProvider {
       if (eventFailure)
         throw new ProviderFailure(
           "agent",
-          /ECONNRESET|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|socket hang up|connection (reset|closed)|network/i.test(
-            eventFailure,
-          )
+          isAgentNetworkFailure(eventFailure)
             ? "NETWORK_LOST"
             : "AGENT_EVENT_FAILED",
-          eventFailure,
+          isAgentNetworkFailure(eventFailure)
+            ? agentNetworkMessage
+            : eventFailure,
+        );
+      if (readBlocked)
+        throw new ProviderFailure(
+          "environment",
+          "AGENT_READ_BLOCKED",
+          readExecutionBlockedMessage,
         );
       if (!fs.existsSync(output))
         throw new ProviderFailure(
@@ -184,16 +222,29 @@ export class CodexAgentProvider implements AgentProvider {
           "Agent 返回的结构化结果不是有效 JSON",
         );
       }
-      const clean = this.sanitize(parsed);
+      const clean = JSON.parse(
+        redact(JSON.stringify(this.sanitize(parsed)), secrets),
+      );
       fs.writeFileSync(output, JSON.stringify(clean, null, 2), { mode: 0o600 });
       return clean;
     } catch (error) {
+      if (error instanceof Error)
+        error.message = redact(error.message, secrets);
       if (fs.existsSync(output)) fs.unlinkSync(output);
       if (error instanceof ProcessExecutionError) {
-        const network =
-          /ECONNRESET|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|socket hang up|connection (reset|closed)|network/i.test(
-            eventFailure,
+        if (
+          request.stage === "analysis" &&
+          error.reason === "ABNORMAL_EXIT" &&
+          (readBlocked || isReadExecutionBlocked(error.message))
+        )
+          throw new ProviderFailure(
+            "environment",
+            "AGENT_READ_BLOCKED",
+            readExecutionBlockedMessage,
           );
+        const network =
+          ["ABNORMAL_EXIT", "NETWORK_LOST"].includes(error.reason) &&
+          isAgentNetworkFailure(error.message + eventFailure);
         throw new ProviderFailure(
           error.reason === "CANCELLED"
             ? "interrupted"
@@ -201,7 +252,9 @@ export class CodexAgentProvider implements AgentProvider {
               ? "environment"
               : "agent",
           network ? "NETWORK_LOST" : error.reason,
-          `${error.message}${eventFailure ? `\n${eventFailure}` : ""}`,
+          network
+            ? agentNetworkMessage
+            : `${error.message}${eventFailure ? `\n${eventFailure}` : ""}`,
         );
       }
       throw error;

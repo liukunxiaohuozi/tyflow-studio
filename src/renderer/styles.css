@@ -1630,6 +1630,20 @@ dialog::backdrop {
 .modal-body {
   padding: 24px;
 }
+.studio-content-drawer .ant-drawer-body > :first-child {
+  margin-top: 0;
+}
+.studio-content-drawer .ant-drawer-body > :last-child {
+  margin-bottom: 0;
+}
+.studio-content-drawer .ant-drawer-body {
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+.studio-content-drawer .ant-drawer-title {
+  font-size: 16px;
+  line-height: 24px;
+}
 .dirty-confirmation {
   margin-top: 18px;
   padding: 14px;
@@ -2773,3 +2787,37 @@ main.task-intake {
 .recovery-panel .notice {
   overflow-wrap: anywhere;
 }
+.browser-preparation-entry {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 16px 0;
+}
+.browser-test-flow,
+.browser-test-browsers {
+  display: grid;
+  gap: 16px;
+}
+.browser-test-workspace,
+.browser-test-card {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.browser-test-card-title,
+.browser-test-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.browser-test-card-title { justify-content: space-between; }
+.browser-test-flow .check-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.browser-test-flow .check-line input { flex: none; width: auto; margin-top: 3px; }

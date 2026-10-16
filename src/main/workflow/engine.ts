@@ -151,8 +151,13 @@ export class WorkflowEngine {
         this.hooks.sanitize,
       );
       task.failure = checkpoint.failure;
-      checkpoint.failure.impact.unshift(`检查点：${options.label} (${options.id})`);
-      if (task.snapshot) checkpoint.failure.impact.push(`工作区：${task.snapshot.project.directory}`);
+      checkpoint.failure.impact.unshift(
+        `检查点：${options.label} (${options.id})`,
+      );
+      if (task.snapshot)
+        checkpoint.failure.impact.push(
+          `工作区：${task.snapshot.project.directory}`,
+        );
       this.hooks.save(task);
       throw error;
     }
@@ -201,12 +206,10 @@ export class WorkflowEngine {
     await this.recorded(task, stage, signal, handlers[stage]);
     if (stage === "analysis" || stage === "startup") return;
     if (stage === "development") {
-      if (task.kind === "bug" && !options.forceTests) {
+      if (!task.autoTest && !options.forceTests) {
         task.stage = "startup";
         task.status = "waiting-review";
-      } else if (!task.autoTest && !options.forceTests)
-        task.status = "waiting-test";
-      else {
+      } else {
         stage = "test";
         await this.recorded(task, stage, signal, handlers.test);
         task.stage = "startup";
@@ -219,9 +222,7 @@ export class WorkflowEngine {
     this.hooks.log(
       task,
       task.stage ?? stage,
-      task.status === "waiting-test"
-        ? "开发完成，等待启动测试。"
-        : "必要检查完成，可按需启动项目或自行验证。",
+      "修改已完成，可直接在你已打开的浏览器查看热更新；未自动启动项目或浏览器。",
     );
     this.hooks.save(task);
   }
