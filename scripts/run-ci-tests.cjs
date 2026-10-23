@@ -24,7 +24,11 @@ if (run.status) {
           .filter((test) => test.status === "failed")
           .map((test) => test.fullName)
           .join("; ");
-        return `${path.relative(process.cwd(), suite.name)}: ${names || "suite failed"}`;
+        const detail = (suite.message || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 1200);
+        return `${path.relative(process.cwd(), suite.name)}: ${names || "suite failed"}${detail ? ` | ${detail}` : ""}`;
       });
     if (failures.length) summary = failures.join(" | ");
   }
@@ -35,4 +39,3 @@ if (run.status) {
   console.error(`::error title=Cross-platform regression failed::${annotation}`);
   process.exit(run.status);
 }
-

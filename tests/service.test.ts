@@ -83,7 +83,14 @@ async function until(predicate: () => boolean, timeoutMs = 120000) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 async function status(id: string, expected: Task["status"], timeoutMs = 15000) {
-  await until(() => store.getTask(id).status === expected, timeoutMs);
+  await until(() => {
+    const task = store.getTask(id);
+    if (task.status === "failed" && expected !== "failed")
+      throw new Error(
+        `Task failed while waiting for ${expected}: ${task.error || "unknown failure"}`,
+      );
+    return task.status === expected;
+  }, timeoutMs);
   return store.getTask(id);
 }
 function create(overrides: Partial<TaskInput> = {}) {
