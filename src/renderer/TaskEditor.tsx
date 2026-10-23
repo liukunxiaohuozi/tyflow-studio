@@ -54,7 +54,7 @@ function suggestedBranch() {
 function inputFromTask(task: Task): TaskInput {
   return {
     workflowMode: task.workflowMode,
-    workspaceMode: task.workspaceMode ?? "current",
+    workspaceMode: "current",
     title: task.title,
     kind: task.kind,
     size: task.size,
