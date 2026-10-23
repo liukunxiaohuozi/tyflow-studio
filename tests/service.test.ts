@@ -152,7 +152,8 @@ test("an explicit diagnosis request performs a read-only Codex investigation", a
   expect(diagnosed.checks).toEqual([]);
   expect(git("status", "--short")).toBe(before);
   expect(calls()).toHaveLength(1);
-  expect(calls()[0]).toMatchObject({ stage: "analysis", cwd: repository });
+  expect(calls()[0]).toMatchObject({ stage: "analysis" });
+  expect(fs.realpathSync(calls()[0].cwd)).toBe(fs.realpathSync(repository));
   expect(calls()[0].args).toContain("read-only");
   expect(calls()[0].prompt).toContain("DIAGNOSIS ONLY");
   expect(calls()[0].prompt).not.toContain("Read applicable AGENTS.md and the Tyflow workflow");
