@@ -12,7 +12,9 @@ import {
 } from "../src/main/git";
 import type { Project } from "../src/shared/contracts";
 
-jest.setTimeout(30000);
+// Hosted macOS/Windows runners can take longer to create and synchronize real
+// repositories than a developer machine; this is test headroom, not a product timeout.
+jest.setTimeout(90000);
 let root: string,
   upstream: string,
   seed: string,

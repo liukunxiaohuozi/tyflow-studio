@@ -15,7 +15,9 @@ import { EvidenceStore } from "../src/main/evidence";
 import { qualityEnvironmentIdentity } from "../src/main/development-checks";
 import { createHash } from "node:crypto";
 
-jest.setTimeout(30000);
+// These integration cases exercise real Git repositories and child processes.
+// Shared CI runners need headroom without changing any Studio runtime deadline.
+jest.setTimeout(90000);
 let root: string;
 let repository: string;
 let fixture: string;
@@ -61,7 +63,7 @@ function calls(): {
         .map((line) => JSON.parse(line))
     : [];
 }
-async function until(predicate: () => boolean, timeoutMs = 15000) {
+async function until(predicate: () => boolean, timeoutMs = 45000) {
   const start = Date.now();
   while (!predicate()) {
     if (Date.now() - start > timeoutMs)
