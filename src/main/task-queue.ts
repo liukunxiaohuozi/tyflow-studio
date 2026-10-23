@@ -14,6 +14,24 @@ export class TaskQueue {
   has(id: string) {
     return this.running.has(id) || this.waiting.some((job) => job.id === id);
   }
+  /** Reserve an idle checkout for a short explicit local operation. No waiting promise. */
+  reserve(id: string, resource: string) {
+    if (this.closed) throw new Error("客户端正在关闭");
+    if (
+      this.has(id) ||
+      this.waiting.some((job) => job.resource === resource) ||
+      [...this.running.values()].includes(resource)
+    )
+      throw new Error("此任务或原项目还有任务执行或排队，请完成或停止后再应用");
+    this.running.set(id, resource);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.running.delete(id);
+      this.drain();
+    };
+  }
   enqueue(id: string, resource: string, run: () => Promise<void>) {
     if (this.closed) throw new Error("客户端正在关闭");
     if (this.has(id)) throw new Error("该任务已在执行或排队");

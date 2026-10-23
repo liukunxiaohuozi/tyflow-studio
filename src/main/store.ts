@@ -11,7 +11,12 @@ export function initialSettings(resourcesPath?: string): Settings {
   const home = os.homedir();
   const agentPaths = defaultAgentPaths(home, resourcesPath);
   return {
-    execution: { concurrency: 2, previewMode: "single" },
+    execution: {
+      concurrency: 2,
+      previewMode: "single",
+      agentIdleTimeoutMs: 0,
+      agentTimeoutMs: 0,
+    },
     updates: {
       manifestUrl: "",
       githubRepository: "liukunxiaohuozi/tyflow-studio",
@@ -99,6 +104,20 @@ export class Store {
         tasks: [],
       };
     let changed = false;
+    // Retire both Agent deadlines, including values persisted by old clients.
+    if (
+      this.state.settings.execution?.agentIdleTimeoutMs !== 0 ||
+      this.state.settings.execution?.agentTimeoutMs !== 0
+    ) {
+      this.state.settings.execution = {
+        concurrency: 2,
+        previewMode: "single",
+        ...this.state.settings.execution,
+        agentIdleTimeoutMs: 0,
+        agentTimeoutMs: 0,
+      };
+      changed = true;
+    }
     const bundled = defaultAgentPaths(os.homedir(), options.resourcesPath);
     if (options.resourcesPath) {
       const agent = this.state.settings.agent;
@@ -137,6 +156,13 @@ export class Store {
   }
   saveSettings(settings: Settings) {
     this.state.settings = structuredClone(settings);
+    this.state.settings.execution = {
+      concurrency: 2,
+      previewMode: "single",
+      ...this.state.settings.execution,
+      agentIdleTimeoutMs: 0,
+      agentTimeoutMs: 0,
+    };
     this.flush();
   }
   tasks(): Task[] {
@@ -157,6 +183,12 @@ export class Store {
     else this.state.tasks[i] = structuredClone(task);
     this.flush();
     return structuredClone(task);
+  }
+  deleteTask(id: string) {
+    const index = this.state.tasks.findIndex((task) => task.id === id);
+    if (index < 0) throw new Error("任务不存在");
+    this.state.tasks.splice(index, 1);
+    this.flush();
   }
   saveTask(raw: TaskInput, id?: string): Task {
     const input = validateTaskInput(raw);

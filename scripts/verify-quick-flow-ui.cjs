@@ -84,6 +84,24 @@ async function main() {
     await page.bringToFront(); await page.screenshot({ path: path.join(evidence, "manual-finish.png"), animations: "disabled" });
     await existingPage.screenshot({ path: path.join(evidence, "existing-browser-updated.png"), animations: "disabled" });
     Object.assign(result, { passed: true, elapsedMs: Date.now() - start, currentDirectoryEdited: true, currentBranchPreserved: true, oneDevelopmentCall: true, dependencyInstallationCount: 0, formalTestCount: 0, noBrowserLoginOrStartupDialog: true, alreadyOpenPageObservedUpdate: true, manualReviewNotFakedAsAutomation: !task.testExecution, optionalTestingVisible: true });
+    if (process.env.STUDIO_VERIFY_OPTIONAL_TEST === "1") {
+      // Opt in through the real UI only after the manual-review assertions above.
+      fs.writeFileSync(path.join(fixture, "control.json"), JSON.stringify({ result: {
+        summary: "Targeted fixture regression", checks: [{ name: "BUG-REGRESSION", state: "passed", detail: "Controlled fixture assertion", evidence: [{ kind: "command", command: "fixture-targeted-check", exitCode: 0, summary: "Fixture assertion" }] }],
+      } }));
+      await page.getByRole("button", { name: "自动化测试介入（可选）", exact: true }).click();
+      await expect.poll(async () => (await page.evaluate(() => window.studio.bootstrap())).tasks[0]?.testExecution?.conclusion, { timeout: 30000 }).toBe("VERIFIED");
+      const tested = (await page.evaluate(() => window.studio.bootstrap())).tasks[0];
+      const afterCalls = fs.readFileSync(path.join(fixture, "calls.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+      assert.deepEqual(afterCalls.map(call => call.stage), ["development", "test"]);
+      assert.equal(tested.checkpoints.some(c => c.id.startsWith("test:command:")), false);
+      assert.equal(afterCalls.at(-1).prompt.includes("Read applicable AGENTS.md and the Tyflow workflow"), false);
+      await expect(page.getByRole("button", { name: "测试准备 / 手动登录", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect(existingPage.locator("#copy")).toHaveText("Updated copy");
+      await page.screenshot({ path: path.join(evidence, "optional-targeted-test.png"), animations: "disabled" });
+      result.optionalTargetedTest = { passed: true, onlyOneTestAgentCall: true, noFullCommands: true, noWorkflowReload: true, noBrowserLoginDialog: true, existingPagePreserved: true };
+    }
   } catch (error) { result.error = error.message; fs.writeFileSync(path.join(evidence, `failure-${Date.now()}.json`), JSON.stringify(result, null, 2)); throw error; }
   finally {
     await app?.close().catch(() => {}); await browser?.close().catch(() => {});

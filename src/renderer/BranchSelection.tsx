@@ -34,51 +34,6 @@ export default function BranchSelection({
         )
       : undefined;
   const setBranch = (branch: TaskInput["branch"]) => patch({ branch });
-  if (input.workflowMode === "quick")
-    return (
-      <div className="branch-selection">
-        <Notice>
-          {I18nT(
-            "直接修改当前项目目录与当前分支，不拉取、不切分支、不新建工作区；保存后由现有项目热更新。需要新分支或并行开发时请选择标准流程。",
-            "Edit the current project and branch without pulling, switching branches or creating a workspace. The running project hot reloads saved files. Choose standard flow for a new branch or parallel work.",
-          )}
-        </Notice>
-        <p className="mono">
-          {
-            settings.projects.find((project) => project.id === input.projectId)
-              ?.directory
-          }{" "}
-          · {repo?.branch || "—"}
-        </p>
-        {repo?.dirty && (
-          <Notice>
-            {I18nT(
-              "已有未提交修改会保留；开始前会请你确认，不会清空工作区。",
-              "Existing uncommitted changes will be preserved; confirmation is required before starting.",
-            )}
-          </Notice>
-        )}
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={input.autoTest}
-            disabled={disabled}
-            onChange={(event) => patch({ autoTest: event.target.checked })}
-          />
-          <span>
-            <strong>
-              {I18nT("自动化测试介入（可选）", "Automated testing (optional)")}
-            </strong>
-            <small>
-              {I18nT(
-                "默认不启用。修改结束后直接由你在现有浏览器查看，无需额外登录或打开测试浏览器。",
-                "Off by default. Review the edit in your existing browser; no extra login or test browser required.",
-              )}
-            </small>
-          </span>
-        </label>
-      </div>
-    );
   return (
     <div className="branch-selection">
       <div className="inline-section-heading">
@@ -103,17 +58,28 @@ export default function BranchSelection({
             })
           }
         >
-          <option value="isolated">
+          <option value="current">
             {I18nT(
-              "独立工作区（支持并行）",
-              "Isolated workspace (parallel tasks)",
+              "当前项目目录（默认，编辑器可见）",
+              "Current project (default, visible in editor)",
             )}
           </option>
-          <option value="current">
-            {I18nT("当前项目目录", "Current project directory")}
+          <option value="isolated">
+            {I18nT(
+              "独立工作区（同项目并行时选用）",
+              "Isolated workspace (opt in for parallel tasks)",
+            )}
           </option>
         </select>
       </Field>
+      {input.workspaceMode !== "isolated" && (
+        <Notice>
+          {I18nT(
+            "直接修改此项目目录，文件变化会出现在编辑器更改区；已运行的项目可继续热更新。同一目录中的任务会排队执行。",
+            "Edit this project directly: changes appear in your editor and existing dev server. Tasks using the same directory run sequentially.",
+          )}
+        </Notice>
+      )}
       {input.workspaceMode === "isolated" && (
         <Notice>
           {I18nT(
@@ -278,25 +244,15 @@ export default function BranchSelection({
       )}
       {(input.kind !== "bug" || input.workflowMode) && (
         <div className="test-setting">
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              disabled={disabled}
-              checked={input.autoTest}
-              onChange={(event) => patch({ autoTest: event.target.checked })}
-            />
-            <span>
-              <strong>
-                {I18nT("自动化测试介入", "Include automated testing")}
-              </strong>
-              <small>
-                {I18nT(
-                  "开发后执行测试 Skill，结果与日志进入本次记录。",
-                  "Run the testing skill after development and retain its results and logs.",
-                )}
-              </small>
-            </span>
-          </label>
+          <span>
+            <strong>{I18nT("验证策略由 Studio 自动决定", "Studio chooses the verification policy")}</strong>
+            <small>
+              {I18nT(
+                "Codex 会结合意图、改动范围和风险选择 Skill 与测试深度。",
+                "Codex selects skills and test depth from intent, scope, and risk.",
+              )}
+            </small>
+          </span>
           <span className="subtle-code">
             {settings.agent.testSkill
               .replace(/\\/g, "/")

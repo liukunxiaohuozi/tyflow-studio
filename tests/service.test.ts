@@ -11,6 +11,9 @@ import { PolicyEngine } from "../src/main/policy";
 import type { Task, TaskInput } from "../src/shared/contracts";
 import type { BrowserProvider } from "../src/main/providers/browser";
 import { ProviderFailure } from "../src/main/workflow/failures";
+import { EvidenceStore } from "../src/main/evidence";
+import { qualityEnvironmentIdentity } from "../src/main/development-checks";
+import { createHash } from "node:crypto";
 
 jest.setTimeout(30000);
 let root: string;
@@ -58,14 +61,18 @@ function calls(): {
         .map((line) => JSON.parse(line))
     : [];
 }
-async function until(predicate: () => boolean) {
+async function until(predicate: () => boolean, timeoutMs = 15000) {
   const start = Date.now();
   while (!predicate()) {
-    if (Date.now() - start > 15000)
+    if (Date.now() - start > timeoutMs)
       throw new Error(
         "Timed out waiting for fixture service: " +
           JSON.stringify(
-            store.tasks().map((t) => ({ status: t.status, error: t.error })),
+            store.tasks().map((t) => ({
+              status: t.status,
+              error: t.error,
+              logs: t.logs.slice(-4),
+            })),
           ),
       );
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -73,8 +80,8 @@ async function until(predicate: () => boolean) {
   // Public task status is published immediately before the active-operation finally block.
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
-async function status(id: string, expected: Task["status"]) {
-  await until(() => store.getTask(id).status === expected);
+async function status(id: string, expected: Task["status"], timeoutMs = 15000) {
+  await until(() => store.getTask(id).status === expected, timeoutMs);
   return store.getTask(id);
 }
 function create(overrides: Partial<TaskInput> = {}) {
@@ -100,6 +107,102 @@ async function developed() {
   await service.action(task.id, "develop");
   return status(task.id, "waiting-review");
 }
+
+test("a non-running task can be deleted with its local run and evidence records", () => {
+  const task = create();
+  const runDirectory = path.join(store.directory, "runs", task.id);
+  const evidenceDirectory = path.join(store.directory, "evidence", task.id);
+  fs.mkdirSync(runDirectory, { recursive: true });
+  fs.mkdirSync(evidenceDirectory, { recursive: true });
+  fs.writeFileSync(path.join(runDirectory, "run.json"), "{}");
+  fs.writeFileSync(path.join(evidenceDirectory, "logs.jsonl"), "{}\n");
+
+  service.deleteTask(task.id);
+
+  expect(() => store.getTask(task.id)).toThrow("任务不存在");
+  expect(fs.existsSync(runDirectory)).toBe(false);
+  expect(fs.existsSync(evidenceDirectory)).toBe(false);
+});
+
+test("an explicit diagnosis request performs a read-only Codex investigation", async () => {
+  const before = git("status", "--short");
+  const task = create({
+    kind: "bug",
+    description: "页面打不开，先帮我分析根因，不要修改代码",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+  });
+  await service.action(task.id, "analyze");
+  const diagnosed = await status(task.id, "ready");
+
+  expect(diagnosed.intent).toMatchObject({ mode: "diagnose" });
+  expect(diagnosed.diagnosis).toMatchObject({
+    confidence: "high",
+    affectedFiles: ["verify.cjs"],
+  });
+  expect(diagnosed.plan).toBeUndefined();
+  expect(diagnosed.checks).toEqual([]);
+  expect(git("status", "--short")).toBe(before);
+  expect(calls()).toHaveLength(1);
+  expect(calls()[0]).toMatchObject({ stage: "analysis", cwd: repository });
+  expect(calls()[0].args).toContain("read-only");
+  expect(calls()[0].prompt).toContain("DIAGNOSIS ONLY");
+  expect(calls()[0].prompt).not.toContain("Read applicable AGENTS.md and the Tyflow workflow");
+});
+
+test("explicit isolated-task application makes checked code visible in original checkout without accepting or pushing", async () => {
+  const task = create({
+    kind: "bug",
+    workspaceMode: "isolated",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+  });
+  configure({
+    developmentFiles: { "verify.cjs": "console.log('editor visible fix')" },
+  });
+  const original = fs.readFileSync(path.join(repository, "verify.cjs"), "utf8");
+  await expect(service.applyWorkspace(task.id)).rejects.toThrow(/完成开发/);
+  await service.action(task.id, "fix");
+  const finished = await status(task.id, "waiting-review", 30000);
+  expect(fs.readFileSync(path.join(repository, "verify.cjs"), "utf8")).toBe(
+    original,
+  );
+  const before = git("rev-parse", "HEAD");
+  const applying = service.applyWorkspace(task.id);
+  await expect(service.applyWorkspace(task.id)).rejects.toThrow();
+  const applied = await applying;
+  expect(applied.status).toBe("waiting-review");
+  expect(applied.workspace?.application?.files).toContain("verify.cjs");
+  expect(applied.snapshot).toEqual(finished.snapshot);
+  expect(applied.delivery).toBeUndefined();
+  expect(
+    fs.readFileSync(path.join(repository, "verify.cjs"), "utf8"),
+  ).toContain("editor visible fix");
+  expect(git("branch", "--show-current")).toBe("main");
+  expect(git("rev-parse", "HEAD")).toBe(before);
+  expect(git("diff", "--cached", "--name-only")).toBe("");
+  expect(
+    (await service.applyWorkspace(task.id)).workspace?.application?.files,
+  ).toContain("verify.cjs");
+}, 60000);
+
+test("isolated task source modified after development checks cannot be applied using stale completion", async () => {
+  const task = create({
+    kind: "bug",
+    workspaceMode: "isolated",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+  });
+  configure({
+    developmentFiles: { "verify.cjs": "console.log('checked fix')" },
+  });
+  await service.action(task.id, "fix");
+  const finished = await status(task.id, "waiting-review", 30000);
+  fs.appendFileSync(
+    path.join(finished.workspace!.directory, "verify.cjs"),
+    "\n// changed after checks",
+  );
+  await expect(service.applyWorkspace(task.id)).rejects.toThrow(/已变化/);
+  expect(git("status", "--porcelain")).toBe("");
+  expect(service.busy).toBe(false);
+}, 60000);
 
 test("quick text modification uses the live checkout with one Agent call and no test/browser ceremony", async () => {
   const task = create({
@@ -141,6 +244,47 @@ test("quick text modification uses the live checkout with one Agent call and no 
     finished.logs.some((entry) =>
       /安装独立依赖|专用.*浏览器/.test(entry.message),
     ),
+  ).toBe(false);
+});
+
+test("optional quick testing verifies only pending cases without full commands or workflow reload", async () => {
+  const task = create({
+    workflowMode: "quick",
+    workspaceMode: "current",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+  });
+  await service.action(task.id, "fix");
+  await status(task.id, "waiting-review");
+  configure({
+    result: {
+      summary: "Targeted regression",
+      checks: [
+        {
+          name: "BUG-REGRESSION",
+          state: "passed",
+          detail: "Independent fixture assertion",
+          evidence: [
+            {
+              kind: "command",
+              command: "fixture-targeted-check",
+              exitCode: 0,
+              summary: "Fixture assertion",
+            },
+          ],
+        },
+      ],
+    },
+  });
+  await service.action(task.id, "test");
+  const verified = await status(task.id, "waiting-review");
+  expect(verified.testExecution?.conclusion).toBe("VERIFIED");
+  expect(calls().map((c) => c.stage)).toEqual(["development", "test"]);
+  expect(calls().at(-1)!.prompt).toContain("L1 targeted verification only");
+  expect(calls().at(-1)!.prompt).not.toContain(
+    "Read applicable AGENTS.md and the Tyflow workflow",
+  );
+  expect(
+    verified.checkpoints?.some((c) => c.id.startsWith("test:command:")),
   ).toBe(false);
 });
 
@@ -608,18 +752,29 @@ test("bug fix calls Codex directly on the selected branch without a planning inv
   expect(opened).toEqual([url]);
 });
 
-test("bug fix with runtime-only unexecuted checks waits for manual review instead of failing", async () => {
+test("bug fix with proved regression and explicit manual browser acceptance waits for review", async () => {
   configure({
     result: {
       summary: "Code fix complete; runtime review remains",
       checks: [
         {
-          name: "static check",
+          name: "focused regression",
+          purpose: "regression",
           state: "passed",
-          detail: "lint passed",
+          detail: "independent expected behavior asserted",
+          covers: ["BUG-REQ-001"],
+          evidence: [
+            {
+              kind: "command",
+              command: "node focused-regression.cjs",
+              exitCode: 0,
+              summary: "expected fixture outcome asserted",
+            },
+          ],
         },
         {
           name: "real browser review",
+          purpose: "manual",
           state: "unexecuted",
           detail: "requires the running application",
         },
@@ -646,7 +801,6 @@ test("assessment invokes read-only Codex, passes schema and exact target commit,
   expect(invocation.args).toEqual(
     expect.arrayContaining([
       "exec",
-      "--ignore-user-config",
       "--sandbox",
       "read-only",
       "-c",
@@ -782,6 +936,7 @@ test("remote-only existing branch freezes the actual local branch for subsequent
   );
   git("remote", "add", "origin", remote);
   const task = create({
+    workflowMode: "standard",
     branch: {
       mode: "existing",
       base: "refs/remotes/origin/feature/remote-only",
@@ -850,8 +1005,18 @@ test("structured agent results redact credentials from nested plans, frozen snap
       checks: [
         {
           name: `Check ${secret}`,
+          purpose: "regression",
           state: "passed",
           detail: `Evidence ${secret}`,
+          covers: ["REQ-001"],
+          evidence: [
+            {
+              kind: "command",
+              command: "node fixture-regression.cjs",
+              exitCode: 0,
+              summary: `Independent assertion ${secret}`,
+            },
+          ],
         },
       ],
     },
@@ -1484,6 +1649,9 @@ test("one failed case retries only that case and reuses passed engineering comma
 
 test("browser prerequisites stop before expensive checks and resume the same task with scoped tools", async () => {
   const task = await developed();
+  // This scenario explicitly requires browser assertions, unlike source-only cases.
+  task.snapshot!.plan.testCases[0].browsers = ["chrome"];
+  store.putTask(task);
   let prepared = false;
   let browserSession = 1;
   const release = jest.fn();
@@ -1736,7 +1904,29 @@ test("supplementing an approved but unexecuted plan requires fresh assessment", 
   await expect(service.action(t.id, "develop")).rejects.toThrow();
 });
 
-test("silent Codex timeout is an Agent failure and resumes the same frozen workspace", async () => {
+test("no-output notice does not advance the Agent's last real output timestamp", () => {
+  const task = create({ kind: "bug" });
+  task.activity = {
+    lastOutputAt: "2026-10-01T00:00:00.000Z",
+    idleTimeoutMs: 0,
+  };
+  const log = Reflect.get(service, "log") as (
+    task: Task,
+    stage: "development",
+    message: string,
+  ) => void;
+  log.call(
+    service,
+    task,
+    "development",
+    "Agent 暂未收到新输出，继续等待；不会仅因无输出停止。",
+  );
+  expect(store.getTask(task.id).activity?.lastOutputAt).toBe(
+    "2026-10-01T00:00:00.000Z",
+  );
+});
+
+test("silent Codex exceeding legacy idle settings keeps running and completes without retry", async () => {
   const settings = store.settings();
   settings.execution = {
     concurrency: 2,
@@ -1744,21 +1934,50 @@ test("silent Codex timeout is an Agent failure and resumes the same frozen works
     agentIdleTimeoutMs: 1000,
   };
   store.saveSettings(settings);
-  configure({ delay: 10000 });
+  configure({ delay: 2500 });
+  const task = create({ kind: "bug" });
+  await service.action(task.id, "fix");
+  await until(() => calls().some((call) => call.stage === "development"));
+  expect(store.getTask(task.id).activity?.idleTimeoutMs).toBe(0);
+  const finished = await status(task.id, "waiting-review", 30000);
+  expect(finished.failure).toBeUndefined();
+  expect(
+    finished.logs.some((entry) => entry.message.includes("已暂停执行")),
+  ).toBe(false);
+  expect(calls().map((call) => call.stage)).toEqual(["development"]);
+}, 45000);
+
+test("legacy total deadline cannot stop a silent Codex execution or cause duplicate work", async () => {
+  const settings = store.settings();
+  settings.execution = {
+    concurrency: 2,
+    previewMode: "single",
+    agentTimeoutMs: 1000,
+  };
+  store.saveSettings(settings);
+  configure({ delay: 2500 });
   const t = create({ kind: "bug" });
   await service.action(t.id, "fix");
-  const failed = await status(t.id, "failed");
-  expect(failed.failure).toMatchObject({
-    category: "agent",
-    code: "IDLE_TIMEOUT",
-    checkpointId: "development:agent",
+  const finished = await status(t.id, "waiting-review", 30000);
+  expect(finished.failure).toBeUndefined();
+  expect(finished.snapshot).toBeDefined();
+  expect(calls().map((c) => c.stage)).toEqual(["development"]);
+}, 45000);
+
+test("Codex reconnect errors followed by completion succeed without a Studio retry", async () => {
+  configure({
+    transientError: "ECONNRESET reconnecting 1/5",
+    completedEvent: true,
   });
-  expect(failed.snapshot).toBeDefined();
-  configure({});
-  await service.action(t.id, "retry");
-  const recovered = await status(t.id, "waiting-review");
-  expect(recovered.snapshot).toEqual(failed.snapshot);
-  expect(calls().map((c) => c.stage)).toEqual(["development", "development"]);
+  const t = create();
+  await service.action(t.id, "analyze");
+  const finished = await status(t.id, "ready");
+  expect(finished.failure).toBeUndefined();
+  expect(finished.plan).toBeDefined();
+  expect(calls()).toHaveLength(1);
+  expect(
+    finished.logs.some((line) => line.message.includes("reconnecting 1/5")),
+  ).toBe(true);
 });
 
 test("a network turn failure cannot become a pass even when Codex exits zero with valid JSON", async () => {
@@ -1993,6 +2212,339 @@ test("reported implementation failures are code failures, not Agent transport fa
     code: "DEVELOPMENT_CHECK_FAILED",
   });
 });
+
+test("missing regression evidence remains incomplete and can recover with checks-only without reimplementation", async () => {
+  const task = await ready();
+  configure({
+    developmentFiles: {
+      "verify.cjs": "console.log('implementation retained')",
+    },
+    result: {
+      summary: "saved, syntax only",
+      checks: [
+        {
+          name: "syntax",
+          purpose: "quality",
+          state: "passed",
+          detail: "parse only",
+        },
+      ],
+    },
+  });
+  await service.action(task.id, "develop");
+  const incomplete = await status(task.id, "failed");
+  expect(incomplete.failure?.code).toBe("DEVELOPMENT_VALIDATION_INCOMPLETE");
+  const content = fs.readFileSync(path.join(repository, "verify.cjs"), "utf8");
+  configure({
+    result: {
+      summary: "focused behavior asserted",
+      checks: [
+        {
+          name: "requirement regression",
+          purpose: "regression",
+          state: "passed",
+          detail: "expected behavior matched",
+          covers: ["REQ-001"],
+          evidence: [
+            {
+              kind: "command",
+              command: "node focused-assertion.cjs",
+              exitCode: 0,
+              summary: "independent assertion",
+            },
+          ],
+        },
+      ],
+    },
+  });
+  await service.action(task.id, "retry", { developmentChecksOnly: true });
+  const completed = await status(task.id, "waiting-review");
+  expect(completed.failure).toBeUndefined();
+  expect(fs.readFileSync(path.join(repository, "verify.cjs"), "utf8")).toBe(
+    content,
+  );
+  expect(calls().map((c) => c.stage)).toEqual([
+    "analysis",
+    "development",
+    "development",
+  ]);
+  expect(calls()[2].prompt).toContain("DEVELOPMENT CHECKS ONLY");
+  expect(completed.runs?.map((r) => r.status)).toEqual([
+    "passed",
+    "failed",
+    "passed",
+  ]);
+});
+
+test("checks-only mutation is blocked and preserved rather than silently accepted or reverted", async () => {
+  const task = await ready();
+  configure({
+    result: {
+      summary: "failed check",
+      checks: [
+        {
+          name: "regression",
+          purpose: "regression",
+          state: "failed",
+          detail: "controlled mismatch",
+        },
+      ],
+    },
+  });
+  await service.action(task.id, "develop");
+  await status(task.id, "failed");
+  configure({
+    developmentFiles: {
+      "verify.cjs": "console.log('unexpected verification write')",
+    },
+  });
+  await service.action(task.id, "retry", { developmentChecksOnly: true });
+  const failed = await status(task.id, "failed");
+  expect(failed.failure?.code).toBe("DEVELOPMENT_CHECK_CHANGED_SOURCE");
+  expect(
+    fs.readFileSync(path.join(repository, "verify.cjs"), "utf8"),
+  ).toContain("unexpected verification write");
+});
+
+test.each([0, 1])(
+  "actual ESLint report %i recovers through service, persists proof and guards delivery",
+  async (index) => {
+    const reports = JSON.parse(
+      fs.readFileSync(
+        path.join(__dirname, "fixtures/development-lint-replay.json"),
+        "utf8",
+      ),
+    );
+    const original =
+      "switch (mode) {\ncase 1:\n  const oldValue = 1;\n  break;\n}\n";
+    fs.writeFileSync(path.join(repository, "verify.cjs"), original);
+    fs.writeFileSync(path.join(repository, ".gitignore"), "node_modules/\n");
+    fs.writeFileSync(
+      path.join(repository, "eslint.config.cjs"),
+      'module.exports=[{rules:{"no-case-declarations":"error"}}];',
+    );
+    fs.mkdirSync(path.join(repository, "node_modules/eslint"), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(repository, "node_modules/eslint/index.cjs"),
+      `module.exports=require(${JSON.stringify(require.resolve("eslint"))});`,
+    );
+    fs.writeFileSync(
+      path.join(repository, "node_modules/eslint/package.json"),
+      JSON.stringify({
+        main: "index.cjs",
+        version: JSON.parse(
+          fs.readFileSync(require.resolve("eslint/package.json"), "utf8"),
+        ).version,
+      }),
+    );
+    git("add", ".");
+    git("commit", "--quiet", "-m", "controlled lint baseline");
+    const task = create({
+      kind: "bug",
+      workflowMode: "quick",
+      workspaceMode: "current",
+      branch: { mode: "existing", base: "main", name: "main", version: "" },
+    });
+    configure({
+      developmentFiles: { "verify.cjs": "// repaired\n" + original },
+      result: {
+        summary: "syntax alone is insufficient",
+        checks: [
+          {
+            name: "syntax",
+            state: "passed",
+            purpose: "quality",
+            detail: "parse only",
+          },
+          reports[index],
+        ],
+      },
+    });
+    await service.action(task.id, "fix");
+    // Real fixed-tool integration has bounded Git preparation + 30s ESLint;
+    // do not use the 15s synthetic-provider polling budget for this case.
+    const incomplete = await status(task.id, "failed", 60000);
+    expect(incomplete.failure?.code).toBe("DEVELOPMENT_VALIDATION_INCOMPLETE");
+    expect(
+      incomplete.checks.find((c) => c.name === reports[index].name)?.historical
+        ?.count,
+    ).toBe(1);
+    const retained = fs.readFileSync(
+      path.join(repository, "verify.cjs"),
+      "utf8",
+    );
+    configure({
+      result: {
+        summary: "focused requirement proof",
+        checks: [
+          {
+            name: "behavior assertion",
+            purpose: "regression",
+            state: "passed",
+            detail: "controlled independent behavior",
+            covers: incomplete.snapshot!.plan.requirements!.map((r) => r.id),
+            evidence: [
+              {
+                kind: "command",
+                command: "node focused-regression.cjs",
+                exitCode: 0,
+                summary: "independent expected behavior matched",
+              },
+            ],
+          },
+          reports[index],
+        ],
+      },
+    });
+    await service.action(task.id, "retry", { developmentChecksOnly: true });
+    const completed = await status(task.id, "waiting-review", 60000);
+    expect(
+      completed.checks.find((c) => c.name === reports[index].name)?.historical
+        ?.count,
+    ).toBe(1);
+    expect(calls().map((c) => c.stage)).toEqual(["development", "development"]);
+    expect(fs.readFileSync(path.join(repository, "verify.cjs"), "utf8")).toBe(
+      retained,
+    );
+    const savedDirectory = store.directory;
+    service.close();
+    store = new Store(savedDirectory);
+    const commitAndPush = jest
+      .fn(GitSCMProvider.commitAndPush)
+      .mockResolvedValue({
+        commit: git("rev-parse", "HEAD"),
+        branch: "main",
+        remote: "fixture",
+      });
+    service = new StudioService(
+      store,
+      credentials,
+      (t) => observed.push(t),
+      async () => {},
+      { scm: { ...GitSCMProvider, commitAndPush } },
+    );
+    expect(store.getTask(task.id).status).toBe("waiting-review");
+    expect(store.getTask(task.id).runs?.map((r) => r.status)).toEqual([
+      "failed",
+      "passed",
+    ]);
+    if (index === 0) {
+      expect((await service.action(task.id, "accept")).status).toBe("accepted");
+      expect(commitAndPush).toHaveBeenCalledTimes(1);
+    } else {
+      fs.appendFileSync(
+        path.join(repository, "verify.cjs"),
+        "// source changed after validation\n",
+      );
+      await expect(service.action(task.id, "start")).rejects.toThrow(
+        "历史检查对比证据",
+      );
+      expect(store.getTask(task.id).failure?.code).toBe(
+        "DEVELOPMENT_EVIDENCE_INVALID",
+      );
+      expect(commitAndPush).not.toHaveBeenCalled();
+    }
+    expect(opened).toEqual([]);
+  },
+  120000,
+);
+
+test("an independently clean lint proof cannot be reused after source changes", async () => {
+  const task = await developed();
+  const evidence = new EvidenceStore(store.directory, (value) => value);
+  const proof = evidence.saveResult(task, {
+    tool: "eslint",
+    baseCommit: task.snapshot!.baseCommit,
+    environment: qualityEnvironmentIdentity(repository),
+    files: [
+      {
+        file: "verify.cjs",
+        sourceHash: createHash("sha256")
+          .update(fs.readFileSync(path.join(repository, "verify.cjs")))
+          .digest("hex"),
+        before: [],
+        after: [],
+      },
+    ],
+  });
+  task.checks.push({
+    name: "ESLint",
+    purpose: "quality",
+    state: "passed",
+    detail: "independent clean result",
+    qualityProof: proof,
+  });
+  store.putTask(task);
+  fs.appendFileSync(
+    path.join(repository, "verify.cjs"),
+    "\n// changed after proof\n",
+  );
+  await expect(service.action(task.id, "start")).rejects.toThrow(
+    "历史检查对比证据",
+  );
+  expect(store.getTask(task.id).failure?.code).toBe(
+    "DEVELOPMENT_EVIDENCE_INVALID",
+  );
+});
+
+test.each([false, true])(
+  "historical warning acceptance validates proof before delivery (tampered=%s)",
+  async (tampered) => {
+    const task = await developed();
+    const evidence = new EvidenceStore(store.directory, (value) => value);
+    const proof = evidence.saveResult(task, {
+      tool: "eslint",
+      file: "verify.cjs",
+      baseCommit: task.snapshot!.baseCommit,
+      environment: qualityEnvironmentIdentity(repository),
+      sourceHash: createHash("sha256")
+        .update(fs.readFileSync(path.join(repository, "verify.cjs")))
+        .digest("hex"),
+      after: [{ ruleId: "no-case-declarations" }],
+    });
+    task.checks.push({
+      name: "historical lint",
+      purpose: "quality",
+      state: "failed",
+      detail: "controlled historical fixture",
+      historical: { evidencePath: proof.path, sha256: proof.sha256, count: 1 },
+    });
+    store.putTask(task);
+    const commitAndPush = jest
+      .fn(GitSCMProvider.commitAndPush)
+      .mockResolvedValue({
+        commit: git("rev-parse", "HEAD"),
+        branch: task.snapshot!.branch.name,
+        remote: "fixture",
+      });
+    service = new StudioService(
+      store,
+      credentials,
+      (changed) => observed.push(changed),
+      async () => {},
+      { scm: { ...GitSCMProvider, commitAndPush } },
+    );
+    if (tampered) {
+      fs.writeFileSync(proof.path, "{}");
+      await expect(service.action(task.id, "accept")).rejects.toThrow(
+        "历史检查对比证据",
+      );
+      expect(store.getTask(task.id).failure?.code).toBe(
+        "DEVELOPMENT_EVIDENCE_INVALID",
+      );
+      expect(commitAndPush).not.toHaveBeenCalled();
+    } else {
+      expect((await service.action(task.id, "accept")).status).toBe("accepted");
+      expect(commitAndPush).toHaveBeenCalledTimes(1);
+      expect(
+        store.getTask(task.id).checks.find((c) => c.name === "historical lint")
+          ?.state,
+      ).toBe("failed");
+    }
+  },
+);
 
 test("a policy-only failure revalidates the gate without repeating the completed development Agent", async () => {
   const t = await ready(),

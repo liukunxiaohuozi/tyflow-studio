@@ -4,6 +4,7 @@ const api: StudioAPI = {
   browserTest: (id, action, input) =>
     ipcRenderer.invoke("studio:browser-test", id, action, input),
   openWorkspace: (id) => ipcRenderer.invoke("studio:open-workspace", id),
+  applyWorkspace: (id) => ipcRenderer.invoke("studio:apply-workspace", id),
   setupChecks: (id) => ipcRenderer.invoke("studio:setup-checks", id),
   updateStatus: () => ipcRenderer.invoke("studio:update-status"),
   checkUpdate: () => ipcRenderer.invoke("studio:update-check"),
@@ -25,6 +26,7 @@ const api: StudioAPI = {
   testConnection: (target, id) =>
     ipcRenderer.invoke("studio:connection", target, id),
   saveTask: (input, id) => ipcRenderer.invoke("studio:save-task", input, id),
+  deleteTask: (id) => ipcRenderer.invoke("studio:delete-task", id),
   taskAction: (id, action, options) =>
     ipcRenderer.invoke("studio:action", id, action, options),
   openTarget: (id, external) =>

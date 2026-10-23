@@ -244,6 +244,7 @@ function bind() {
     const error = await shell.openPath(directory);
     if (error) throw new Error(error);
   });
+  handle("apply-workspace", (id) => service!.applyWorkspace(uuid.parse(id)));
   handle("setup-checks", async (id) =>
     redactChecks(
       await setupChecks(
@@ -377,6 +378,7 @@ function bind() {
       id === undefined ? undefined : uuid.parse(id),
     ),
   );
+  handle("delete-task", (id) => service!.deleteTask(uuid.parse(id)));
   handle("action", (id, action, options) =>
     activating
       ? Promise.reject(new Error("正在启用客户端更新，请稍后执行任务"))
@@ -404,6 +406,7 @@ function bind() {
                 .object({
                   planFeedback: z.string().trim().min(1).max(8000).optional(),
                   allowDirty: z.boolean().optional(),
+                  developmentChecksOnly: z.boolean().optional(),
                   supplement: z
                     .object({
                       text: z.string().trim().max(8000).optional(),

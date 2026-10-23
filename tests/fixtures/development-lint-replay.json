@@ -1,0 +1,20 @@
+[
+  {
+    "name": "单文件 ESLint",
+    "purpose": "quality",
+    "state": "failed",
+    "detail": "17 处既有 no-case-declarations 错误；本次与 HEAD 比较确认诊断未新增。",
+    "evidence": [{"kind":"command","command":"ESLint.lintText 对比 HEAD 与当前文件","exitCode":1,"summary":"基线和当前均为 17 errors。"}],
+    "covers": ["BUG-REQ-001"],
+    "verifies": ["PLAN-002"]
+  },
+  {
+    "name": "此前单文件 ESLint",
+    "purpose": "quality",
+    "state": "failed",
+    "detail": "保留此前失败记录：基线与当前均有 17 处 no-case-declarations 错误；本轮未重跑。",
+    "evidence": [],
+    "covers": ["BUG-REQ-001"],
+    "verifies": ["PLAN-002"]
+  }
+]

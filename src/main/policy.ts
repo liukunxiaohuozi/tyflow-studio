@@ -50,13 +50,13 @@ const settingsSchema = z
         agentIdleTimeoutMs: z
           .number()
           .int()
-          .min(1000)
+          .min(0)
           .max(30 * 60_000)
           .optional(),
         agentTimeoutMs: z
           .number()
           .int()
-          .min(1000)
+          .min(0)
           .max(60 * 60_000)
           .optional(),
       })
@@ -225,7 +225,11 @@ export function canAct(task: Task, action: TaskAction) {
       "review",
       "failed",
     ],
-    accept: ["waiting-review", "review", ...(!task.autoTest ? ["waiting-test"] : [])],
+    accept: [
+      "waiting-review",
+      "review",
+      ...(!task.autoTest ? ["waiting-test"] : []),
+    ],
     retry: [
       "failed",
       "stopped",
@@ -265,7 +269,9 @@ export function canAct(task: Task, action: TaskAction) {
   if (
     action === "accept" &&
     (!task.checks.length ||
-      task.checks.some((c) => c.state === "failed" || c.state === "blocked"))
+      task.checks.some(
+        (c) => (c.state === "failed" && !c.historical) || c.state === "blocked",
+      ))
   )
     throw new Error("必要验证尚未全部通过");
 }
@@ -335,6 +341,10 @@ export const planSchema = z
             priority: z.enum(["P0", "P1", "P2"]).optional(),
             steps: z.array(z.string().max(4000)).min(1).max(30),
             expected: z.string().min(1).max(4000),
+            browsers: z
+              .array(z.enum(["chrome", "firefox"]))
+              .max(2)
+              .optional(),
           })
           .strict(),
       )

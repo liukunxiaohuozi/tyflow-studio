@@ -31,6 +31,10 @@ import BranchSelection from "./BranchSelection";
 import RecoveryPanel from "./RecoveryPanel";
 import SupplementDialog from "./SupplementDialog";
 import RequirementAssets from "./RequirementAssets";
+import {
+  deriveExecutionPolicy,
+  inferTaskIntent,
+} from "../shared/task-intent";
 interface Props {
   api?: StudioAPI;
   simulated?: boolean;
@@ -123,8 +127,11 @@ export default function TaskEditor({
   const pasteLock = useRef(false);
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
   const project = settings.projects.find((p) => p.id === input.projectId);
-  const quick = input.workflowMode === "quick";
-  const direct = quick || (!input.workflowMode && input.kind === "bug");
+  const inferredIntent = inferTaskIntent(input);
+  const executionPolicy = deriveExecutionPolicy(input);
+  const quick = executionPolicy.workflowMode === "quick";
+  const diagnosed = Boolean(task?.diagnosis && !editMode);
+  const direct = inferredIntent.mode === "implement";
   const native = Boolean(api);
   const running = Boolean(task && activeStatuses.includes(task.status));
   const confirm = Boolean(task?.plan && !editMode);
@@ -615,7 +622,7 @@ export default function TaskEditor({
           {I18nT("同步远程", "Sync remote")}
         </button>
       </div>
-      {!confirm ? (
+      {!confirm && !diagnosed ? (
         <section className="panel intake-panel">
           <div className="intake-toolbar">
             <div
@@ -626,6 +633,7 @@ export default function TaskEditor({
               {sourceOptions.map(({ key, title, icon: Icon }) => (
                 <button
                   key={key}
+                  type="button"
                   role="tab"
                   aria-selected={input.kind === key}
                   disabled={running}
@@ -636,22 +644,13 @@ export default function TaskEditor({
                         workflowMode: key === "design" ? "standard" : "quick",
                         size: key === "design" ? "medium" : "small",
                         autoTest: false,
-                        workspaceMode:
-                          key === "design" ? "isolated" : "current",
-                        branch:
-                          key === "design"
-                            ? {
-                                mode: "new",
-                                base: repo?.branch || "",
-                                name: suggestedBranch(),
-                                version: "",
-                              }
-                            : {
-                                mode: "existing",
-                                base: repo?.branch || "",
-                                name: repo?.branch || "",
-                                version: "",
-                              },
+                        workspaceMode: "current",
+                        branch: {
+                          mode: "existing",
+                          base: repo?.branch || "",
+                          name: repo?.branch || "",
+                          version: "",
+                        },
                       },
                       true,
                     )
@@ -881,58 +880,94 @@ export default function TaskEditor({
                 report={report}
               />
             )}
-            <Field label={I18nT("执行方式", "Execution mode")}>
-              <select
-                value={input.workflowMode ?? "standard"}
-                disabled={running || busy}
-                onChange={(e) =>
-                  patch(
-                    {
-                      workflowMode: e.target.value as "quick" | "standard",
-                      workspaceMode:
-                        e.target.value === "quick" ? "current" : "isolated",
-                      size: e.target.value === "quick" ? "small" : "medium",
-                      branch:
-                        e.target.value === "quick"
-                          ? {
-                              mode: "existing",
-                              base: repo?.branch || "",
-                              name: repo?.branch || "",
-                              version: "",
-                            }
-                          : {
-                              mode: "new",
-                              base: repo?.branch || "",
-                              name: suggestedBranch(),
-                              version: "",
-                            },
-                    },
-                    true,
-                  )
-                }
-              >
-                <option value="quick" disabled={input.kind === "design"}>
-                  {I18nT(
-                    "L1 轻量修改：文案、样式、小 Bug",
-                    "L1 quick edit: copy, styles, small bugs",
-                  )}
-                </option>
-                <option value="standard">
-                  {I18nT(
-                    "标准开发：评估、确认计划，可选并行工作区",
-                    "Standard: assessment, plan approval, optional isolated workspace",
-                  )}
-                </option>
-              </select>
+            <Field label={I18nT("智能执行策略", "Autonomous execution policy")}>
+              <Notice>
+                <strong>
+                  {inferredIntent.mode === "diagnose"
+                    ? I18nT("仅分析，不修改代码", "Diagnosis only; no code changes")
+                    : executionPolicy.workflowMode === "quick"
+                      ? I18nT("直接实施，小范围验证", "Direct implementation with focused checks")
+                      : I18nT("完整开发与验证", "Full development and verification")}
+                </strong>
+                <br />
+                {executionPolicy.reason}
+                <br />
+                {I18nT(
+                  "Studio 会根据意图和改动风险自主选择 Codex Skill；无需手动选择 Tyflow 或自动化测试。",
+                  "Studio selects Codex skills from intent and risk; Tyflow and automated testing do not require manual selection.",
+                )}
+              </Notice>
             </Field>
             <BranchSelection
-              input={input}
+              input={{
+                ...input,
+                workflowMode: executionPolicy.workflowMode,
+                autoTest: executionPolicy.autoTest,
+              }}
               repo={repo}
               disabled={running || busy || repoBusy}
               settings={settings}
-              patch={(value) => patch(value)}
+              patch={(value) => {
+                const branch = value.branch ?? input.branch;
+                const workspaceMode = value.workspaceMode ?? input.workspaceMode;
+                const usesCurrentBranch =
+                  branch.mode === "existing" && branch.base === repo?.branch;
+                patch({
+                  ...value,
+                  workflowMode:
+                    workspaceMode === "isolated" || !usesCurrentBranch
+                      ? "standard"
+                      : input.kind === "design" || input.size !== "small"
+                        ? "standard"
+                        : "quick",
+                });
+              }}
             />
           </fieldset>
+        </section>
+      ) : diagnosed ? (
+        <section className="panel">
+          <div className="section-heading">
+            <div>
+              <h2>{I18nT("根因分析完成", "Root-cause analysis complete")}</h2>
+              <p>
+                {I18nT(
+                  "Codex 已完成只读调查，没有修改任何文件。你可以继续追问、补充信息或授权修复。",
+                  "Codex completed a read-only investigation without modifying files. Continue the discussion, add evidence, or authorize a fix.",
+                )}
+              </p>
+            </div>
+            <button
+              className="text-button"
+              disabled={running}
+              onClick={() => setEditMode(true)}
+            >
+              {I18nT("修改问题", "Edit problem")}
+            </button>
+          </div>
+          <div className="task-summary diagnosis-result">
+            <strong>{task?.diagnosis?.summary}</strong>
+            <h3>{I18nT("根因", "Root cause")}</h3>
+            <p className="prewrap">{task?.diagnosis?.rootCause}</p>
+            <h3>{I18nT("证据", "Evidence")}</h3>
+            <ul>
+              {task?.diagnosis?.evidence.map((item, index) => (
+                <li key={index}>{item}</li>
+              ))}
+            </ul>
+            {Boolean(task?.diagnosis?.affectedFiles.length) && (
+              <>
+                <h3>{I18nT("相关文件", "Affected files")}</h3>
+                <ul className="file-list mono">
+                  {task?.diagnosis?.affectedFiles.map((file) => (
+                    <li key={file}>{file}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <h3>{I18nT("建议处理", "Recommendation")}</h3>
+            <p className="prewrap">{task?.diagnosis?.recommendation}</p>
+          </div>
         </section>
       ) : (
         <>
@@ -1326,11 +1361,16 @@ export default function TaskEditor({
                     "确认后锁定计划与版本，开始实际开发。",
                     "Confirmation freezes the plan and version and starts real development.",
                   )
-                : quick
+                : inferredIntent.mode === "diagnose"
                   ? I18nT(
-                      "直接修改当前项目，保存后在你已打开的浏览器查看热更新。",
-                      "Edit the current project directly; inspect hot reload in your existing browser.",
+                      "只读调用 Codex 调查根因，不修改代码；分析完成后由你决定是否继续修复。",
+                      "Use Codex read-only to investigate the root cause; decide whether to continue with a repair after diagnosis.",
                     )
+                  : quick
+                    ? I18nT(
+                        "直接修改当前项目，保存后在你已打开的浏览器查看热更新。",
+                        "Edit the current project directly; inspect hot reload in your existing browser.",
+                      )
                   : input.kind === "bug"
                     ? I18nT(
                         "直接调用 Codex 在所选分支定位、修复并完成必要检查，然后启动项目供你验收。",
@@ -1353,7 +1393,9 @@ export default function TaskEditor({
                   .catch((e) => report(e.message, true))
               }
             >
-              {input.kind === "bug"
+              {inferredIntent.mode === "diagnose"
+                ? I18nT("停止分析", "Stop diagnosis")
+                : input.kind === "bug"
                 ? I18nT("停止修复", "Stop fixing")
                 : I18nT("停止评估", "Stop assessment")}
             </button>
@@ -1407,7 +1449,7 @@ export default function TaskEditor({
                     Boolean(repoError) ||
                     !repo ||
                     !native ||
-                    (!direct && !input.title.trim()) ||
+                    (input.kind !== "bug" && !input.title.trim()) ||
                     !input.branch.base ||
                     (input.branch.mode === "new" &&
                       !input.branch.name.trim()) ||
@@ -1421,7 +1463,9 @@ export default function TaskEditor({
                           (input.kind === "text" && a.documents?.length),
                       ))
                   }
-                  onClick={() => continueAction(direct ? "fix" : "analyze")}
+                  onClick={() =>
+                    continueAction(diagnosed || direct ? "fix" : "analyze")
+                  }
                 >
                   {busy ? (
                     <Loader2 className="spin" size={16} />
@@ -1430,10 +1474,10 @@ export default function TaskEditor({
                   ) : (
                     <ArrowRight size={16} />
                   )}
-                  {quick
-                    ? I18nT("开始修改", "Start modification")
-                    : direct
-                      ? I18nT("开始修复", "Start fixing")
+                  {diagnosed
+                    ? I18nT("按分析结果继续修复", "Fix using this diagnosis")
+                    : direct || inferredIntent.mode === "diagnose"
+                      ? I18nT("开始", "Start")
                       : task?.plan
                         ? I18nT("重新评估", "Reassess")
                         : I18nT("开始评估", "Start assessment")}

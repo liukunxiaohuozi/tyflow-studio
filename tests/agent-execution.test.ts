@@ -10,15 +10,13 @@ test.each(["win32", "darwin", "linux"] as const)(
     const args = codexExecutionArgs("analysis", platform);
     expect(args).toEqual(
       expect.arrayContaining([
-        "--ignore-user-config",
         "--sandbox",
         "read-only",
         'approval_policy="never"',
       ]),
     );
-    expect(args.includes('windows.sandbox="elevated"')).toBe(
-      platform === "win32",
-    );
+    expect(args).not.toContain("--ignore-user-config");
+    expect(args).not.toContain('windows.sandbox="elevated"');
     expect(args).not.toContain("--ignore-rules");
     expect(args).not.toContain("--approve-for-me");
     expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");

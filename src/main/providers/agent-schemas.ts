@@ -24,6 +24,13 @@ const caseSchema = {
     priority: { type: "string", enum: ["P0", "P1", "P2"] },
     steps: list(text(0, 4000), 1, 30),
     expected: text(1, 4000),
+    browsers: {
+      type: "array",
+      items: { type: "string", enum: ["chrome", "firefox"] },
+      maxItems: 2,
+      description:
+        "Explicit browser matrix for this case. Use [] for source, static, command or unit checks. Require browsers only for actual runtime UI interaction; mentioning a page/file/save string is not a browser requirement.",
+    },
   },
   required: [
     "id",
@@ -33,6 +40,7 @@ const caseSchema = {
     "priority",
     "steps",
     "expected",
+    "browsers",
   ],
 };
 const requirementSchema = {
@@ -98,6 +106,12 @@ export const resultJsonSchema = {
         additionalProperties: false,
         properties: {
           name: string,
+          purpose: {
+            type: "string",
+            enum: ["implementation", "regression", "quality", "manual"],
+            description:
+              "regression proves the requested behavior with a focused assertion; quality is lint/syntax/formatting; manual is explicitly deferred human acceptance, never a required development check.",
+          },
           state: {
             type: "string",
             enum: ["passed", "failed", "blocked", "unexecuted"],
@@ -140,7 +154,15 @@ export const resultJsonSchema = {
           covers: strings,
           verifies: strings,
         },
-        required: ["name", "state", "detail", "evidence", "covers", "verifies"],
+        required: [
+          "name",
+          "purpose",
+          "state",
+          "detail",
+          "evidence",
+          "covers",
+          "verifies",
+        ],
       },
     },
   },
@@ -152,6 +174,9 @@ export const resultSchema = z.object({
     .array(
       z.object({
         name: z.string(),
+        purpose: z
+          .enum(["implementation", "regression", "quality", "manual"])
+          .optional(),
         state: z.enum(["passed", "failed", "blocked", "unexecuted"]),
         detail: z.string(),
         evidence: z
@@ -195,4 +220,63 @@ export const resultSchema = z.object({
       }),
     )
     .min(1),
+});
+
+export const diagnosisJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    summary: text(1, 8000),
+    rootCause: text(1, 16000),
+    evidence: list(text(1, 4000), 1, 40),
+    affectedFiles: list(text(1, 1000), 0, 100),
+    recommendation: text(1, 12000),
+    confidence: { type: "string", enum: ["high", "medium", "low"] },
+    introducedAt: { type: ["string", "null"], minLength: 1, maxLength: 1000 },
+    introducingCommit: {
+      type: ["object", "null"],
+      additionalProperties: false,
+      properties: {
+        hash: text(1, 100),
+        author: text(1, 1000),
+        committedAt: text(1, 1000),
+        message: text(1, 4000),
+      },
+      required: ["hash", "author", "committedAt", "message"],
+    },
+    versionInfo: { type: ["string", "null"], minLength: 1, maxLength: 4000 },
+    traceabilityNotes: { type: ["string", "null"], minLength: 1, maxLength: 8000 },
+  },
+  required: [
+    "summary",
+    "rootCause",
+    "evidence",
+    "affectedFiles",
+    "recommendation",
+    "confidence",
+    "introducedAt",
+    "introducingCommit",
+    "versionInfo",
+    "traceabilityNotes",
+  ],
+};
+
+export const diagnosisSchema = z.object({
+  summary: z.string().min(1),
+  rootCause: z.string().min(1),
+  evidence: z.array(z.string().min(1)).min(1),
+  affectedFiles: z.array(z.string().min(1)),
+  recommendation: z.string().min(1),
+  confidence: z.enum(["high", "medium", "low"]),
+  introducedAt: z.string().min(1).nullable(),
+  introducingCommit: z
+    .object({
+      hash: z.string().min(1),
+      author: z.string().min(1),
+      committedAt: z.string().min(1),
+      message: z.string().min(1),
+    })
+    .nullable(),
+  versionInfo: z.string().min(1).nullable(),
+  traceabilityNotes: z.string().min(1).nullable(),
 });

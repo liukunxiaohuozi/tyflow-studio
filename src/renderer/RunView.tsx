@@ -23,6 +23,7 @@ import {
   activeStatuses,
   Notice,
   Modal,
+  PreviewDrawer,
   PlanDialog,
   Status,
   statusLabel,
@@ -32,6 +33,10 @@ import AttachmentImages from "./AttachmentImages";
 import RecoveryPanel from "./RecoveryPanel";
 import SupplementDialog from "./SupplementDialog";
 import { validationPending } from "../shared/browser-test";
+import {
+  developmentValidationPending,
+  canRecheckDevelopment,
+} from "../shared/development-checks";
 const BrowserTestDrawer = lazy(() => import("./BrowserTestDrawer"));
 
 function toneOf(status: Task["status"]) {
@@ -108,10 +113,24 @@ export default function RunView({
   const [busy, setBusy] = useState(false);
   const [supplementOpen, setSupplementOpen] = useState(false);
   const [startConfirmOpen, setStartConfirmOpen] = useState(false);
+  const [applyOpen, setApplyOpen] = useState(false);
+  const [historyRun, setHistoryRun] = useState<
+    NonNullable<Task["runs"]>[number] | null
+  >(null);
+  const [diagnosisOpen, setDiagnosisOpen] = useState(false);
   const [browserPreparationOpen, setBrowserPreparationOpen] = useState(false);
+  const [activityNow, setActivityNow] = useState(Date.now());
   const logRef = useRef<HTMLDivElement>(null);
   const running = activeStatuses.includes(task.status);
-  const incomplete = validationPending(task.failure?.code);
+  const bugAnalysis =
+    task.kind === "bug" &&
+    task.intent?.mode === "diagnose" &&
+    !task.snapshot;
+  const analysisReady = bugAnalysis && Boolean(task.diagnosis);
+  const analysisRunning = bugAnalysis && !task.diagnosis;
+  const developmentPending = developmentValidationPending(task.failure?.code);
+  const incomplete =
+    developmentPending || validationPending(task.failure?.code);
   const tone = incomplete ? "warning" : toneOf(task.status);
   const logs = task.logs.filter(
     (x) =>
@@ -123,11 +142,22 @@ export default function RunView({
     if (follow && logRef.current)
       logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [task.logs.length, follow]);
-  async function action(value: TaskAction) {
+  useEffect(() => {
+    if (task.status !== "developing" || !task.activity) return;
+    const timer = window.setInterval(() => setActivityNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [task.status, task.activity?.lastOutputAt]);
+  async function action(value: TaskAction, developmentChecksOnly = false) {
     if (!api) return;
     setBusy(true);
     try {
-      onTask(await api.taskAction(task.id, value));
+      onTask(
+        await api.taskAction(
+          task.id,
+          value,
+          developmentChecksOnly ? { developmentChecksOnly: true } : undefined,
+        ),
+      );
     } catch (error) {
       report((error as Error).message, true);
     } finally {
@@ -137,6 +167,24 @@ export default function RunView({
   async function confirmStart() {
     setStartConfirmOpen(false);
     await action("start");
+  }
+  async function applyToProject() {
+    if (!api?.applyWorkspace) return;
+    setBusy(true);
+    try {
+      onTask(await api.applyWorkspace(task.id));
+      setApplyOpen(false);
+      report(
+        I18nT(
+          "改动已应用到原项目，请在编辑器更改区查看；尚未提交或推送。",
+          "Changes applied to the original project. Review them in your editor; nothing was committed or pushed.",
+        ),
+      );
+    } catch (error) {
+      report((error as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
   }
   async function pauseAndSupplement() {
     if (!api) return;
@@ -210,7 +258,9 @@ export default function RunView({
         I18nT("运行与验收", "Run and accept"),
       ];
   return (
-    <div className={`run-page tone-${tone}`}>
+    <div
+      className={`run-page tone-${tone}${analysisReady ? " analysis-ready" : ""}${analysisRunning ? " analysis-running" : ""}`}
+    >
       <header className="run-hero">
         <div className="run-hero-copy">
           <div className="eyebrow">
@@ -218,25 +268,37 @@ export default function RunView({
           </div>
           <h1>{task.title}</h1>
           <p>
-            {!automated
+            {task.workspace?.application
               ? I18nT(
-                  "修改保存后由现有项目热更新，你直接在已打开的浏览器查看即可。",
-                  "Saved changes hot reload in the running project. Review them in your existing browser.",
+                  "改动已应用到原项目，可在编辑器更改区 review，并在原浏览器验证；尚未提交或推送。",
+                  "Changes applied to the original project for editor review and existing-browser verification; not committed or pushed.",
                 )
-              : task.kind === "bug"
+              : task.workspace
                 ? I18nT(
-                    "修复完成并通过必要检查后，直接启动项目供你验收。",
-                    "After the fix passes required checks, launch the project for review.",
+                    "修改保存在独立工作区，原项目浏览器不会自动热更新；请核对下方实际修改目录。",
+                    "Changes are saved in an isolated workspace. The original project's browser will not hot reload them; check the edited directory below.",
                   )
-                : I18nT(
-                    "每个阶段都有结果，测试也计入交付进度。",
-                    "Every stage records an outcome, including testing.",
-                  )}
+                : !automated
+                  ? I18nT(
+                      "修改保存后由现有项目热更新，你直接在已打开的浏览器查看即可。",
+                      "Saved changes hot reload in the running project. Review them in your existing browser.",
+                    )
+                  : task.kind === "bug"
+                    ? I18nT(
+                        "修复完成并通过必要检查后，直接启动项目供你验收。",
+                        "After the fix passes required checks, launch the project for review.",
+                      )
+                    : I18nT(
+                        "每个阶段都有结果，测试也计入交付进度。",
+                        "Every stage records an outcome, including testing.",
+                      )}
           </p>
         </div>
         {incomplete ? (
           <span className="badge warning">
-            {I18nT("验证未完成", "Validation incomplete")}
+            {developmentPending
+              ? I18nT("开发验证未完成", "Development validation incomplete")
+              : I18nT("验证未完成", "Validation incomplete")}
           </span>
         ) : (
           <Status status={task.status} />
@@ -260,6 +322,85 @@ export default function RunView({
           </div>
         ))}
       </nav>
+
+      {analysisReady && task.diagnosis && (
+        <section className="panel diagnosis-result">
+          <div className="section-heading">
+            <div>
+              <h2>{I18nT("问题分析结果", "Issue analysis result")}</h2>
+              <p>{task.diagnosis.summary}</p>
+            </div>
+            <span className="badge success">
+              {I18nT("置信度", "Confidence")}: {task.diagnosis.confidence}
+            </span>
+          </div>
+          <div className="diagnosis-grid">
+            <div>
+              <strong>{I18nT("根因", "Root cause")}</strong>
+              <p className="prewrap">{task.diagnosis.rootCause}</p>
+            </div>
+            <div>
+              <strong>{I18nT("分析证据", "Evidence")}</strong>
+              <ul>
+                {task.diagnosis.evidence.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+            {task.diagnosis.affectedFiles.length > 0 && (
+              <div>
+                <strong>{I18nT("涉及文件", "Affected files")}</strong>
+                {task.diagnosis.affectedFiles.map((file) => (
+                  <p className="mono" key={file}>{file}</p>
+                ))}
+              </div>
+            )}
+            <div>
+              <strong>{I18nT("建议处理", "Recommendation")}</strong>
+              <p className="prewrap">{task.diagnosis.recommendation}</p>
+            </div>
+            <div className="diagnosis-traceability">
+              <strong>{I18nT("Bug 引入记录", "Bug introduction record")}</strong>
+              <p>
+                {I18nT("引入时间", "Introduced at")}: {task.diagnosis.introducedAt || I18nT("无法确认", "Unconfirmed")}
+              </p>
+              {task.diagnosis.introducingCommit ? (
+                <>
+                  <p className="mono">Commit: {task.diagnosis.introducingCommit.hash}</p>
+                  <p>{I18nT("作者", "Author")}: {task.diagnosis.introducingCommit.author}</p>
+                  <p>{I18nT("提交时间", "Committed at")}: {task.diagnosis.introducingCommit.committedAt}</p>
+                  <p>{I18nT("提交说明", "Commit message")}: {task.diagnosis.introducingCommit.message}</p>
+                </>
+              ) : (
+                <p>{I18nT("引入提交：无法确认", "Introducing commit: unconfirmed")}</p>
+              )}
+              <p>{I18nT("对应版本", "Version")}: {task.diagnosis.versionInfo || I18nT("无法确认", "Unconfirmed")}</p>
+              {task.diagnosis.traceabilityNotes && (
+                <p className="prewrap">{task.diagnosis.traceabilityNotes}</p>
+              )}
+            </div>
+          </div>
+          {task.kind === "bug" && task.status === "ready" && (
+            <div className="actions">
+              <button
+                disabled={busy}
+                onClick={() => setSupplementOpen(true)}
+              >
+                <MessageSquarePlus size={16} />
+                {I18nT("补充", "Add details")}
+              </button>
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() => void action("fix")}
+              >
+                <Wrench size={16} />
+                {I18nT("修复", "Repair")}
+              </button>
+            </div>
+          )}
+        </section>
+      )}
 
       {task.snapshot && api?.browserTest && task.stage === "test" && (
         <div className="browser-preparation-entry">
@@ -301,10 +442,20 @@ export default function RunView({
       {(task.status === "waiting-review" ||
         (!task.autoTest && task.status === "waiting-test")) && (
         <Notice>
-          {I18nT(
-            "修改已保存，开发阶段已结束。直接在你已打开的浏览器查看效果即可，无需再启动、登录或打开专用浏览器。人工查看结果不等于自动化测试通过。",
-            "Changes saved; development has ended. Review the result in your existing browser without another startup, login or dedicated browser. Manual review is not an automated test pass.",
-          )}
+          {task.workspace?.application
+            ? I18nT(
+                "已向原项目应用改动，请核对编辑器中的文件差异并自行验证。验收提交仍针对独立任务分支，不会代你提交原目录其他修改。",
+                "Changes were applied to the original project. Review the editor diff and verify manually. Acceptance still submits the isolated task branch, never other changes in your original directory.",
+              )
+            : task.workspace
+              ? I18nT(
+                  "开发检查已完成，修改保存在独立工作区。原项目浏览器不会自动显示这些改动；请在任务工作区验证。尚未人工验收，也未自动合回原目录。",
+                  "Development checks completed in the isolated workspace. The original project's browser will not show these changes automatically. Review the task workspace; no manual acceptance or merge is implied.",
+                )
+              : I18nT(
+                  "修改已保存，开发阶段已结束。直接在你已打开的浏览器查看效果即可，无需再启动、登录或打开专用浏览器。人工查看结果不等于自动化测试通过。",
+                  "Changes saved; development has ended. Review the result in your existing browser without another startup, login or dedicated browser. Manual review is not an automated test pass.",
+                )}
         </Notice>
       )}
       {task.status === "queued" && (
@@ -313,13 +464,6 @@ export default function RunView({
             "任务已排队，空闲后会自动执行。你可以切换到其他任务，也可以停止此任务。",
             "Task queued and will run when a slot is free. You can switch tasks or stop this task.",
           )}
-        </Notice>
-      )}
-      {!task.workspace && task.snapshot && (
-        <Notice>
-          {I18nT("实际修改目录", "Edited directory")}：
-          <span className="mono">{task.snapshot.project.directory}</span> ·{" "}
-          {task.snapshot.branch.name || task.snapshot.branch.base}
         </Notice>
       )}
       {task.workspace && (
@@ -337,7 +481,64 @@ export default function RunView({
           >
             {I18nT("打开工作区", "Open workspace")}
           </button>
+          <br />
+          {I18nT("原项目目录", "Original project directory")}：{" "}
+          <span className="mono">{task.workspace.sourceDirectory}</span>{" "}
+          {api?.applyWorkspace &&
+            ["waiting-review", "review"].includes(task.status) &&
+            !task.failure && (
+              <button disabled={busy} onClick={() => setApplyOpen(true)}>
+                {I18nT(
+                  "应用到原项目（编辑器可见）",
+                  "Apply to original project (visible in editor)",
+                )}
+              </button>
+            )}
+          {task.workspace.application && (
+            <small>
+              {I18nT("上次应用", "Last applied")}：
+              {new Date(task.workspace.application.at).toLocaleString()} ·{" "}
+              {task.workspace.application.branch}
+            </small>
+          )}
         </Notice>
+      )}
+      {applyOpen && task.workspace && (
+        <PreviewDrawer
+          title={I18nT("应用改动到原项目", "Apply changes to original project")}
+          close={() => {
+            if (!busy) setApplyOpen(false);
+          }}
+        >
+          <Notice>
+            {I18nT(
+              "将任务改动保存为原项目的未提交文件，在编辑器更改区即可 review，现有项目可热更新。不切换分支、不提交、不推送，也不表示已经验收。",
+              "Save task changes as uncommitted files in the original project for editor review and hot reload. No branch switch, commit, push or acceptance.",
+            )}
+          </Notice>
+          <p className="mono">{task.workspace.sourceDirectory}</p>
+          <p>
+            {I18nT(
+              "原项目有未提交修改、文件冲突或任务检查已失效时会停止，不覆盖现有工作。应用前保留备份；后续验收提交仍针对独立任务分支。",
+              "Stops on uncommitted source changes, conflicting files or stale checks without overwriting existing work. A backup is retained. Later acceptance still submits the isolated task branch.",
+            )}
+          </p>
+          <p>
+            {I18nT(
+              "请先保存编辑器中尚未保存的文件，应用完成后在原项目的更改区查看。",
+              "Save unsaved editor buffers first, then review the original project's changes after applying.",
+            )}
+          </p>
+          <button
+            className="primary"
+            disabled={busy}
+            onClick={() => void applyToProject()}
+          >
+            {busy
+              ? I18nT("正在核对并应用…", "Checking and applying…")
+              : I18nT("确认应用到原项目", "Confirm apply to original project")}
+          </button>
+        </PreviewDrawer>
       )}
       {task.status === "review" && (
         <Notice tone="success">
@@ -384,8 +585,25 @@ export default function RunView({
               <div>
                 <h2>
                   {incomplete
-                    ? I18nT("验证未完成", "Validation incomplete")
+                    ? developmentPending
+                      ? I18nT(
+                          "开发验证未完成",
+                          "Development validation incomplete",
+                        )
+                      : I18nT("验证未完成", "Validation incomplete")
                     : statusLabel(task.status)}
+                  {task.status === "developing" && task.activity && (
+                    <span className="activity-seconds">
+                      {Math.max(
+                        0,
+                        Math.floor(
+                          (activityNow - Date.parse(task.activity.lastOutputAt)) /
+                            1000,
+                        ),
+                      )}
+                      s
+                    </span>
+                  )}
                 </h2>
                 <p>
                   {simulated
@@ -400,6 +618,17 @@ export default function RunView({
                 </p>
               </div>
             </div>
+            {task.diagnosis && !analysisReady && (
+              <div className="run-status-actions">
+                <button
+                  className="text-button"
+                  onClick={() => setDiagnosisOpen(true)}
+                >
+                  <FileText size={14} />
+                  {I18nT("查看原因", "View cause")}
+                </button>
+              </div>
+            )}
             {!quickView && (
               <div className="run-status-actions">
                 <button
@@ -498,18 +727,22 @@ export default function RunView({
                 {task.checks.map((check, i) => (
                   <details key={`${check.name}-${i}`} className="check-result">
                     <summary>
-                      <span className={`result-dot ${check.state}`} />
+                      <span
+                        className={`result-dot ${check.historical ? "unexecuted" : check.state}`}
+                      />
                       <strong>{check.name}</strong>
                       <span
-                        className={`badge ${check.state === "passed" ? "success" : check.state === "failed" ? "danger" : "warning"}`}
+                        className={`badge ${check.historical ? "warning" : check.state === "passed" ? "success" : check.state === "failed" ? "danger" : "warning"}`}
                       >
-                        {check.state === "passed"
-                          ? I18nT("通过", "Passed")
-                          : check.state === "failed"
-                            ? I18nT("失败", "Failed")
-                            : check.state === "blocked"
-                              ? I18nT("阻塞", "Blocked")
-                              : I18nT("未执行", "Not executed")}
+                        {check.historical
+                          ? I18nT("历史问题", "Historical finding")
+                          : check.state === "passed"
+                            ? I18nT("通过", "Passed")
+                            : check.state === "failed"
+                              ? I18nT("失败", "Failed")
+                              : check.state === "blocked"
+                                ? I18nT("阻塞", "Blocked")
+                                : I18nT("未执行", "Not executed")}
                       </span>
                     </summary>
                     <pre>{check.detail}</pre>
@@ -660,8 +893,8 @@ export default function RunView({
           </p>
           {task.runs?.length ? (
             [...task.runs].reverse().map((run) => (
-              <details className="history-run" key={run.id}>
-                <summary>
+              <div className="history-run" key={run.id}>
+                <div className="history-run-summary">
                   <strong>
                     {stages.find((stage) => stage.key === run.stage)?.label ||
                       run.stage}
@@ -678,49 +911,13 @@ export default function RunView({
                           ? I18nT("已停止", "Stopped")
                           : I18nT("执行中", "Running")}
                   </span>
-                </summary>
-                <div className="history-detail">
-                  <p className="muted">
-                    {I18nT("结束时间：", "Finished: ")}
-                    {run.finishedAt
-                      ? new Date(run.finishedAt).toLocaleString()
-                      : I18nT("尚未结束", "Not finished")}
-                  </p>
-                  {run.error && <Notice tone="error">{run.error}</Notice>}
-                  {run.checks.length ? (
-                    run.checks.map((check, index) => (
-                      <details
-                        className="check-result"
-                        key={`${check.name}-${index}`}
-                      >
-                        <summary>
-                          <span className={`result-dot ${check.state}`} />
-                          <strong>{check.name}</strong>
-                          <span
-                            className={`badge ${check.state === "passed" ? "success" : check.state === "failed" ? "danger" : "warning"}`}
-                          >
-                            {check.state === "passed"
-                              ? I18nT("通过", "Passed")
-                              : check.state === "failed"
-                                ? I18nT("失败", "Failed")
-                                : check.state === "blocked"
-                                  ? I18nT("阻塞", "Blocked")
-                                  : I18nT("未执行", "Not executed")}
-                          </span>
-                        </summary>
-                        <pre>{check.detail}</pre>
-                      </details>
-                    ))
-                  ) : (
-                    <p className="muted">
-                      {I18nT(
-                        "此次执行没有检查结果。",
-                        "No check results were recorded for this run.",
-                      )}
-                    </p>
+                  {run.status === "failed" && (
+                    <button onClick={() => setHistoryRun(run)}>
+                      {I18nT("查看原因", "View reason")}
+                    </button>
                   )}
                 </div>
-              </details>
+              </div>
             ))
           ) : (
             <p className="muted">
@@ -836,9 +1033,21 @@ export default function RunView({
                   <button onClick={edit}>
                     {I18nT("查看需求", "View requirement")}
                   </button>
+                  {canRecheckDevelopment(task) && (
+                    <button
+                      className="primary"
+                      disabled={busy}
+                      onClick={() => void action("retry", true)}
+                    >
+                      <RotateCcw size={15} />
+                      {I18nT("重新执行开发检查", "Rerun development checks")}
+                    </button>
+                  )}
                   <button disabled={busy} onClick={() => void action("retry")}>
                     <RotateCcw size={15} />
-                    {I18nT("直接重试", "Retry now")}
+                    {canRecheckDevelopment(task)
+                      ? I18nT("重新修复", "Retry implementation")
+                      : I18nT("直接重试", "Retry now")}
                   </button>
                   {!task.snapshot && task.stage !== "analysis" && (
                     <button
@@ -1027,16 +1236,106 @@ export default function RunView({
             </div>
           </Modal>
         )}
-        {supplementOpen && api && (
-          <SupplementDialog
-            api={api}
-            task={task}
-            onTask={onTask}
-            report={report}
-            close={() => setSupplementOpen(false)}
-          />
-        )}
       </div>
+      {supplementOpen && api && (
+        <SupplementDialog
+          api={api}
+          task={task}
+          onTask={onTask}
+          report={report}
+          close={() => setSupplementOpen(false)}
+          continueWith={
+            task.kind === "bug" && task.status === "ready" && task.diagnosis
+              ? "analyze"
+              : undefined
+          }
+        />
+      )}
+      {historyRun && (
+        <PreviewDrawer
+          title={I18nT("执行失败原因", "Execution failure reason")}
+          close={() => setHistoryRun(null)}
+        >
+          <p className="muted">
+            {I18nT("执行阶段", "Stage")}: {stages.find((stage) => stage.key === historyRun.stage)?.label || historyRun.stage}
+            <br />
+            {I18nT("开始时间", "Started")}: {new Date(historyRun.startedAt).toLocaleString()}
+            <br />
+            {I18nT("结束时间", "Finished")}: {historyRun.finishedAt ? new Date(historyRun.finishedAt).toLocaleString() : I18nT("尚未结束", "Not finished")}
+          </p>
+          {historyRun.error && <Notice tone="error">{historyRun.error}</Notice>}
+          {historyRun.checks.map((check, index) => (
+            <section className="history-drawer-check" key={`${check.name}-${index}`}>
+              <div className="history-run-summary">
+                <span className={`result-dot ${check.state}`} />
+                <strong>{check.name}</strong>
+                <span className={`badge ${check.state === "passed" ? "success" : check.state === "failed" ? "danger" : "warning"}`}>
+                  {check.state === "passed"
+                    ? I18nT("通过", "Passed")
+                    : check.state === "failed"
+                      ? I18nT("失败", "Failed")
+                      : check.state === "blocked"
+                        ? I18nT("阻塞", "Blocked")
+                        : I18nT("未执行", "Not executed")}
+                </span>
+              </div>
+              <pre>{check.detail}</pre>
+            </section>
+          ))}
+        </PreviewDrawer>
+      )}
+      {diagnosisOpen && task.diagnosis && (
+        <PreviewDrawer
+          title={I18nT("问题分析结果", "Issue analysis result")}
+          close={() => setDiagnosisOpen(false)}
+        >
+          <p className="prewrap">{task.diagnosis.summary}</p>
+          <div className="diagnosis-grid diagnosis-drawer-grid">
+            <div>
+              <strong>{I18nT("根因", "Root cause")}</strong>
+              <p className="prewrap">{task.diagnosis.rootCause}</p>
+            </div>
+            <div>
+              <strong>{I18nT("分析证据", "Evidence")}</strong>
+              <ul>
+                {task.diagnosis.evidence.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+            {task.diagnosis.affectedFiles.length > 0 && (
+              <div>
+                <strong>{I18nT("涉及文件", "Affected files")}</strong>
+                {task.diagnosis.affectedFiles.map((file) => (
+                  <p className="mono" key={file}>{file}</p>
+                ))}
+              </div>
+            )}
+            <div>
+              <strong>{I18nT("建议处理", "Recommendation")}</strong>
+              <p className="prewrap">{task.diagnosis.recommendation}</p>
+            </div>
+            <div className="diagnosis-traceability">
+              <strong>{I18nT("Bug 引入记录", "Bug introduction record")}</strong>
+              <p>{I18nT("引入时间", "Introduced at")}: {task.diagnosis.introducedAt || I18nT("无法确认", "Unconfirmed")}</p>
+              {task.diagnosis.introducingCommit ? (
+                <>
+                  <p className="mono">Commit: {task.diagnosis.introducingCommit.hash}</p>
+                  <p>{I18nT("作者", "Author")}: {task.diagnosis.introducingCommit.author}</p>
+                  <p>{I18nT("提交时间", "Committed at")}: {task.diagnosis.introducingCommit.committedAt}</p>
+                  <p>{I18nT("提交说明", "Commit message")}: {task.diagnosis.introducingCommit.message}</p>
+                </>
+              ) : (
+                <p>{I18nT("引入提交：无法确认", "Introducing commit: unconfirmed")}</p>
+              )}
+              <p>{I18nT("对应版本", "Version")}: {task.diagnosis.versionInfo || I18nT("无法确认", "Unconfirmed")}</p>
+              {task.diagnosis.traceabilityNotes && (
+                <p className="prewrap">{task.diagnosis.traceabilityNotes}</p>
+              )}
+            </div>
+          </div>
+        </PreviewDrawer>
+      )}
       {dialog && (
         <PlanDialog
           task={task}

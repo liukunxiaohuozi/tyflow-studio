@@ -242,6 +242,9 @@ export class DemoSession {
         ),
       }),
       saveTask: async (input) => this.save(input),
+      deleteTask: async () => {
+        throw new Error(I18nT("演示任务无需删除，退出演示后会自动清理。", "Demo tasks are cleared automatically when you exit the demo."));
+      },
       taskAction: async (_id, action, options) => this.action(action, options),
       openTarget: async () => this.preview(),
       exportTask: async () => {

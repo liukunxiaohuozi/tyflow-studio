@@ -52,3 +52,16 @@ test("L1 copy/style changes pass but dependency/security/deletion changes stop w
     assertQuickChangeScope({}, { "src/deleted.ts": "deleted:<missing>" }),
   ).toThrow("删除文件");
 });
+
+test("isolated task instructions never promise the original browser hot reload", () => {
+  const prompt = developmentInstructions(
+    {
+      workflowMode: "quick",
+      autoTest: false,
+      workspace: { directory: "fixture" },
+    } as Task,
+    true,
+  );
+  expect(prompt).toContain("original project's browser does NOT hot reload");
+  expect(prompt).toContain("purpose=regression");
+});

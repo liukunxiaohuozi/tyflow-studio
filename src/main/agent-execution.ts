@@ -5,13 +5,12 @@ export function standaloneCodexEnvironment(): NodeJS.ProcessEnv {
   return { CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY: undefined };
 }
 
-export function codexExecutionArgs(stage: Stage, platform = process.platform) {
+export function codexExecutionArgs(stage: Stage, _platform = process.platform) {
   return [
     "exec",
-    "--ignore-user-config",
-    // Personal configuration is isolated, but a native sandbox still needs a backend.
-    // Never fall back to unelevated or unsandboxed execution on a provisioning failure.
-    ...(platform === "win32" ? ["-c", 'windows.sandbox="elevated"'] : []),
+    // Inherit the user's Codex model, skills, MCP servers and trusted-project
+    // configuration. Studio supplies task intent; it must not create a reduced
+    // second Codex personality by ignoring the user's configuration.
     ...(stage === "analysis"
       ? ["--sandbox", "read-only", "-c", 'approval_policy="never"']
       : ["--approve-for-me"]),

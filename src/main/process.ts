@@ -178,7 +178,8 @@ export interface RunOptions {
   cwd: string;
   signal?: AbortSignal;
   input?: string;
-  timeout?: number;
+  /** null explicitly disables the deadline; omitted keeps the command default. */
+  timeout?: number | null;
   idleTimeout?: number;
   idleWarningAfter?: number;
   onActivity?: (at: string) => void;
@@ -299,14 +300,17 @@ export async function runCommand(
     };
     resetIdle();
     options.signal?.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => {
-      timeoutReason ??= "TOTAL_TIMEOUT";
-      terminate();
-    }, options.timeout ?? 600_000);
+    const timer =
+      options.timeout === null
+        ? undefined
+        : setTimeout(() => {
+            timeoutReason ??= "TOTAL_TIMEOUT";
+            terminate();
+          }, options.timeout ?? 600_000);
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (idleTimer) clearTimeout(idleTimer);
       if (warningTimer) clearTimeout(warningTimer);
       if (terminationTimer) clearTimeout(terminationTimer);

@@ -15,7 +15,8 @@ import { canReuseTestExecution, validateEvidence } from "../policy";
 import { resultJsonSchema, resultSchema } from "./agent-schemas";
 import { WorkflowEngine, fingerprint } from "../workflow/engine";
 import { ProviderFailure } from "../workflow/failures";
-import { isArtifactState } from "../test-artifacts";
+import { assertTestScope } from "../test-scope";
+import { requiredTestBrowsers } from "../../shared/browser-test";
 export interface TestHost {
   validateBrowserCheck?(task: Task, check: CheckResult): void;
   prepareBrowser?(task: Task, signal: AbortSignal): Promise<void>;
@@ -84,8 +85,70 @@ export class SkillTestProvider implements TestProvider {
     const settings = this.host.settings();
     if (!fs.existsSync(settings.agent.testSkill))
       throw new Error("自动化测试 Skill 文件不存在，请先配置");
-    const project = task.snapshot!.project;
     const beforeTestState = await this.host.workspaceFileState(task);
+    let failure: unknown;
+    try {
+      await this.verifyFrozen(task, signal, info, settings, beforeTestState);
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      // A cancelled signal must not suppress the read-only safety audit.
+      const boundary = task.activity?.checkpointId ?? "测试退出";
+      try {
+        await this.host.checkpoint(
+          task,
+          "test:policy",
+          "测试范围与证据硬闸",
+          "policy",
+          new AbortController().signal,
+          fingerprint("test-scope-v2", beforeTestState),
+          async () => {
+            await this.assertScope(task, beforeTestState, boundary);
+            return task.gateReviews?.evidence ?? [];
+          },
+          { reuse: false },
+        );
+      } catch (error) {
+        delete task.testExecution;
+        this.host.workflow.invalidate(
+          task,
+          ["test:command", "test:agent", "test:case"],
+          "测试期间源码发生变化或范围审查未完成，已有测试结果不能继续复用",
+        );
+        if (failure)
+          this.host.log(
+            task,
+            "test",
+            `原始执行失败：${this.host.safe(String(failure))}；同时发现测试范围或证据审查问题。`,
+            "error",
+          );
+        this.host.publish(task);
+        throw error;
+      }
+    }
+    this.host.log(task, "test", "本次必要检查已通过。", "success");
+  }
+  private async assertScope(
+    task: Task,
+    before: Record<string, string>,
+    boundary: string,
+  ) {
+    assertTestScope(
+      task,
+      before,
+      await this.host.workspaceFileState(task),
+      boundary,
+    );
+  }
+  private async verifyFrozen(
+    task: Task,
+    signal: AbortSignal,
+    info: RepositoryInfo,
+    settings: Settings,
+    beforeTestState: Record<string, string>,
+  ) {
+    const project = task.snapshot!.project;
     const sourceSnapshot = await this.host.sourceSnapshot(task);
     const planHash = this.host.planHash(task);
     const skillHash = createHash("sha256")
@@ -93,6 +156,8 @@ export class SkillTestProvider implements TestProvider {
       .digest("hex");
     const runtime = settings.projects.find((p) => p.id === task.projectId);
     const contextHash = fingerprint(
+      "test-provider-v2",
+      task.workflowMode === "quick",
       this.host.contextHash(task),
       runtime?.startScript,
       runtime?.targetUrl,
@@ -171,7 +236,12 @@ export class SkillTestProvider implements TestProvider {
       this.host.publish(task);
       return;
     }
-    if (this.host.prepareBrowser)
+    // An earlier envelope is not a verdict for a new/failed verification attempt.
+    delete task.testExecution;
+    if (
+      this.host.prepareBrowser &&
+      requiredTestBrowsers(task.snapshot!.plan).length
+    )
       await this.host.checkpoint(
         task,
         "test:browser-preparation",
@@ -185,13 +255,21 @@ export class SkillTestProvider implements TestProvider {
     task.checks = [];
     this.host.publish(task);
     // Avoid scripts such as lint:prettier that implicitly rewrite the whole repository.
-    const scripts = ["typecheck", "tsc", "lint:js", "test", "build"].filter(
-      (name) => info.scripts.includes(name),
-    );
+    const quick = task.workflowMode === "quick";
+    const scripts = (
+      quick ? ["test:change"] : ["typecheck", "tsc", "lint:js", "test", "build"]
+    ).filter((name) => info.scripts.includes(name));
     const unique = scripts.filter(
       (name) => name !== "tsc" || !scripts.includes("typecheck"),
     );
-    if (!unique.length) {
+    if (quick)
+      this.host.log(
+        task,
+        "test",
+        "轻量定向验证：只验证本次用例和已配置的 test:change；不自动运行全量测试或生产构建。",
+        "info",
+      );
+    if (!unique.length && !quick) {
       task.checks.push({
         name: "工程验证命令",
         state: "blocked",
@@ -235,9 +313,14 @@ export class SkillTestProvider implements TestProvider {
                 signal,
                 env: { CI: "true", BROWSER: "none" },
                 timeout: 10 * 60_000,
-                onLine: (line, error) =>
-                  this.host.log(task, "test", line, error ? "error" : "info"),
+                // stderr is a stream, not a verdict (Jest prints passing summaries there).
+                onLine: (line) => this.host.log(task, "test", line, "info"),
               },
+            );
+            await this.assertScope(
+              task,
+              beforeTestState,
+              `工程检查 npm run ${script}`,
             );
             return {
               command: `npm run ${script}`,
@@ -312,6 +395,9 @@ export class SkillTestProvider implements TestProvider {
               task,
               "test",
               this.host.context(task) +
+                (quick
+                  ? "\nL1 targeted verification only: no full test/build, dependency or browser installation. Use focused source assertions or relevant existing tests. Do not expand the approved cases. If actual browser verification is required but unavailable, report blocked, not passed.\n"
+                  : "") +
                 `User requested automated testing intervention. Read and follow the skill at ${settings.agent.testSkill}. Frozen TestRequest V1 (only pending cases included):\n${JSON.stringify({ ...task.testRequest, testCases: pending })}\nVerify only the listed pending cases, once, with independent evidence. Previously passed cases have already been checked by Studio; do not repeat them. Do not change business implementation, commit, push or deploy. You may add targeted test files and local evidence only. Missing browser/auth/environment means blocked/unexecuted, never passed. Checks MUST contain an entry for every listed case; name MUST equal exact case id. P0/P1 passed checks MUST include structured evidence.`,
               resultJsonSchema,
               signal,
@@ -319,6 +405,7 @@ export class SkillTestProvider implements TestProvider {
           ),
         { reuse: false },
       );
+      await this.assertScope(task, beforeTestState, "测试 Agent 返回");
       this.host.log(task, "test", report.summary);
       generated = report.checks;
     }
@@ -414,42 +501,6 @@ export class SkillTestProvider implements TestProvider {
     );
     task.gateReviews = { ...task.gateReviews, evidence: evidenceChecks };
     this.host.publish(task);
-    await this.host.checkpoint(
-      task,
-      "test:policy",
-      "测试范围与证据硬闸",
-      "policy",
-      signal,
-      testKey,
-      async () => {
-        const afterTestState = await this.host.workspaceFileState(task);
-        const touchedDuringTest = [
-          ...new Set([
-            ...Object.keys(beforeTestState),
-            ...Object.keys(afterTestState),
-          ]),
-        ].filter((file) => beforeTestState[file] !== afterTestState[file]);
-        const businessChanges = touchedDuringTest.filter((file) => {
-          if (file.replace(/\\/g, "/").startsWith("test-results/"))
-            return !isArtifactState(
-              project.directory,
-              file,
-              afterTestState[file],
-            );
-          return !/(^|\/|\\)(test|tests|__tests__|specs?)(\/|\\)|\.(test|spec)\./i.test(
-            file,
-          );
-        });
-        if (businessChanges.length)
-          throw new ProviderFailure(
-            "policy",
-            "TEST_CHANGED_BUSINESS",
-            `测试阶段修改了业务或配置文件，必须回到开发与差异审查：${businessChanges.join(", ")}`,
-          );
-        return evidenceChecks;
-      },
-      { reuse: false },
-    );
     if (firstFailure) throw firstFailure;
     const finalSourceSnapshot = await this.host.sourceSnapshot(task);
     task.testExecution = {
@@ -468,6 +519,5 @@ export class SkillTestProvider implements TestProvider {
       evidenceChecks: structuredClone(evidenceChecks),
       conclusion: "VERIFIED",
     };
-    this.host.log(task, "test", "本次必要检查已通过。", "success");
   }
 }

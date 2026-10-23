@@ -505,6 +505,81 @@ main {
   min-width: 0;
   box-shadow: var(--shadow-panel);
 }
+
+.diagnosis-result {
+  margin-top: 12px;
+}
+
+/* Bug analysis stays focused on the diagnosis. Development evidence and
+   controls appear only after the user explicitly starts the repair. */
+.run-page.analysis-ready > :is(
+  .browser-preparation-entry,
+  .recovery-panel,
+  .notice,
+  .run-layout,
+  .run-secondary,
+  .run-actionbar
+) {
+  display: none;
+}
+
+/* While diagnosis is running, keep the live Codex output visible without
+   exposing development/test controls before the user approves a repair. */
+.run-page.analysis-running > :is(
+  .browser-preparation-entry,
+  .recovery-panel,
+  .notice,
+  .run-secondary,
+  .run-actionbar
+) {
+  display: none;
+}
+.run-page.analysis-running > .run-layout {
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+}
+.run-page.analysis-running > .run-layout > .run-board {
+  display: none;
+}
+.run-page.analysis-running {
+  min-height: calc(100vh - 40px);
+}
+.run-page.analysis-running > .run-layout > .run-log-board {
+  min-height: 0;
+  height: calc(100vh - 190px);
+}
+.run-page.analysis-running > .run-layout > .run-log-board > .log-output {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+.diagnosis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+.diagnosis-grid > div {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+.diagnosis-grid > .diagnosis-traceability {
+  grid-column: 1 / -1;
+}
+.diagnosis-drawer-grid {
+  grid-template-columns: 1fr;
+}
+.diagnosis-drawer-grid > .diagnosis-traceability {
+  grid-column: auto;
+}
+.diagnosis-grid ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
 .section-heading {
   display: flex;
   align-items: flex-start;
@@ -1935,19 +2010,42 @@ dialog::backdrop {
   border-top: 1px solid var(--line);
   padding: 13px 0;
 }
-.history-run > summary {
-  cursor: pointer;
+.history-run-summary {
   display: flex;
   align-items: center;
   gap: 14px;
   font-size: 12px;
 }
-.history-run > summary time {
+.history-run-summary time {
   font-size: 11px;
   color: var(--muted);
 }
-.history-run > summary > .badge {
+.history-run-summary > .badge {
   margin-left: auto;
+}
+.history-run-summary > button {
+  margin-left: 0;
+}
+.history-drawer-check {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+.history-drawer-check pre {
+  margin: 12px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.record-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+.text-button.danger-link {
+  color: var(--danger);
 }
 .history-detail {
   margin: 15px 0 0 10px;
@@ -1969,11 +2067,11 @@ dialog::backdrop {
   .record-filters {
     grid-template-columns: 1fr 1fr;
   }
-  .history-run > summary {
+  .history-run-summary {
     flex-wrap: wrap;
     gap: 8px;
   }
-  .history-run > summary time {
+  .history-run-summary time {
     font-size: 10px;
   }
 }
@@ -2317,6 +2415,12 @@ main.run-workspace {
   margin: 0 0 2px;
   font-size: 15px;
   letter-spacing: -0.02em;
+}
+.activity-seconds {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
 }
 .run-status-main p {
   margin: 0;

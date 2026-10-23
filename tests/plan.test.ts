@@ -45,6 +45,36 @@ test("valid assessment needs only one Agent invocation", async () => {
   expect(invoke).toHaveBeenCalledTimes(1);
   expect(report).not.toHaveBeenCalled();
 });
+
+test("assessment preserves explicit source-only and browser cases", async () => {
+  const plan = fixture();
+  const explicit = {
+    ...plan,
+    testCases: plan.testCases.map((c) => ({ ...c, browsers: [] })),
+  };
+  expect(
+    (
+      await requestPlan(
+        jest.fn(async () => explicit),
+        signal(),
+        jest.fn(),
+      )
+    ).testCases[0].browsers,
+  ).toEqual([]);
+  const browser = {
+    ...plan,
+    testCases: plan.testCases.map((c) => ({ ...c, browsers: ["firefox"] })),
+  };
+  expect(
+    (
+      await requestPlan(
+        jest.fn(async () => browser),
+        signal(),
+        jest.fn(),
+      )
+    ).testCases[0].browsers,
+  ).toEqual(["firefox"]);
+});
 test("only invalid output is sent for one bounded correction without fabricated file scopes", async () => {
   const invalid = fixture();
   invalid.planSteps[0].expectedFiles = [];

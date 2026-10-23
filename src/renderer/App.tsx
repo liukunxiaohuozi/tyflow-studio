@@ -127,6 +127,24 @@ export default function App() {
       ),
     [],
   );
+  const deleteTask = useCallback(
+    async (task: Task) => {
+      if (!window.studio) return;
+      try {
+        await window.studio.deleteTask(task.id);
+        setData((previous) =>
+          previous
+            ? { ...previous, tasks: previous.tasks.filter((item) => item.id !== task.id) }
+            : previous,
+        );
+        if (selected === task.id) setSelected(undefined);
+        report(I18nT("任务已删除", "Task deleted"));
+      } catch (error) {
+        report(error instanceof Error ? error.message : String(error), true);
+      }
+    },
+    [report, selected],
+  );
   useEffect(() => {
     let mounted = true;
     const bootstrap = window.studio
@@ -225,7 +243,8 @@ export default function App() {
   ).length;
   const showRun =
     current &&
-    (current.snapshot ||
+    (current.diagnosis ||
+      current.snapshot ||
       [
         "queued",
         "analyzing",
@@ -472,6 +491,7 @@ export default function App() {
                   settings={data.settings}
                   open={openTask}
                   create={create}
+                  remove={deleteTask}
                 />
               )}
               {view === "project" && scopedProject && (
@@ -482,10 +502,7 @@ export default function App() {
                   settings={data.settings}
                   open={openTask}
                   create={create}
-                  configure={() => {
-                    setSettingsTab("developer");
-                    setView("settings");
-                  }}
+                  remove={deleteTask}
                 />
               )}
               {view === "settings" && (

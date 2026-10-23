@@ -1,4 +1,10 @@
 export type TaskKind = "design" | "text" | "bug";
+export type TaskIntentMode =
+  | "diagnose"
+  | "implement"
+  | "plan"
+  | "verify"
+  | "explain";
 export type TaskStatus =
   | "queued"
   | "draft"
@@ -30,7 +36,9 @@ export interface Settings {
   execution?: {
     concurrency: number;
     previewMode: "single" | "multiple";
+    /** Retained for old settings files only. Agent idle-stop is disabled. */
     agentIdleTimeoutMs?: number;
+    /** Retained for old settings files only. Agent total deadline is disabled. */
     agentTimeoutMs?: number;
   };
   updates?: {
@@ -101,6 +109,8 @@ export interface TestCase {
   priority?: "P0" | "P1" | "P2";
   steps: string[];
   expected: string;
+  /** Explicit browser matrix; [] means source/command-only. Absent on legacy plans. */
+  browsers?: ("chrome" | "firefox")[];
 }
 export interface RequirementItem {
   id: string;
@@ -153,6 +163,10 @@ export interface CheckResult {
   name: string;
   state: "passed" | "failed" | "blocked" | "unexecuted";
   detail: string;
+  purpose?: "implementation" | "regression" | "quality" | "manual";
+  /** Only Studio may attach this after an independent baseline comparison. */
+  historical?: { evidencePath: string; sha256: string; count: number };
+  qualityProof?: ResultReference;
   evidence?: Evidence[];
   covers?: string[];
   verifies?: string[];
@@ -227,6 +241,29 @@ export interface AssetDiff {
   unchanged: number;
 }
 export interface Task extends TaskInput {
+  intent?: {
+    mode: TaskIntentMode;
+    source: "explicit" | "inferred";
+    reason: string;
+  };
+  diagnosis?: {
+    summary: string;
+    rootCause: string;
+    evidence: string[];
+    affectedFiles: string[];
+    recommendation: string;
+    confidence: "high" | "medium" | "low";
+    introducedAt?: string | null;
+    introducingCommit?: {
+      hash: string;
+      author: string;
+      committedAt: string;
+      message: string;
+    } | null;
+    versionInfo?: string | null;
+    traceabilityNotes?: string | null;
+  };
+  agentSession?: { threadId: string; updatedAt: string };
   quickBaseline?: Record<string, string>;
   browserTest?: import("./browser-test").BrowserTestConfig;
   checkpoints?: WorkflowCheckpoint[];
@@ -242,6 +279,13 @@ export interface Task extends TaskInput {
     sourceDirectory: string;
     branch: string;
     baseCommit: string;
+    application?: {
+      at: string;
+      branch: string;
+      sourceHead: string;
+      files: string[];
+      backup: string;
+    };
   };
   queued?: { action: TaskAction; at: string };
   runtime?: { startScript: string; targetUrl: string };
@@ -410,6 +454,7 @@ export interface StudioAPI {
     input?: import("./browser-test").BrowserTestInput,
   ): Promise<import("./browser-test").BrowserTestState>;
   openWorkspace?(id: string): Promise<void>;
+  applyWorkspace?(id: string): Promise<Task>;
   setupChecks?(projectId?: string): Promise<SetupCheck[]>;
   updateStatus?(): Promise<UpdateInfo>;
   checkUpdate?(): Promise<UpdateInfo>;
@@ -433,12 +478,14 @@ export interface StudioAPI {
     projectId?: string,
   ): Promise<{ ok: boolean; message: string }>;
   saveTask(input: TaskInput, id?: string): Promise<Task>;
+  deleteTask(id: string): Promise<void>;
   taskAction(
     id: string,
     action: TaskAction,
     options?: {
       planFeedback?: string;
       allowDirty?: boolean;
+      developmentChecksOnly?: boolean;
       supplement?: { text?: string; assetIds?: string[] };
     },
   ): Promise<Task>;

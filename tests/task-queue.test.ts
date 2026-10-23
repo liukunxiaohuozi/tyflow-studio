@@ -85,3 +85,33 @@ test("failed work frees a slot and shutdown does not start queued work", async (
   expect(next).not.toHaveBeenCalled();
   expect(() => queue.enqueue("c", "c", next)).toThrow();
 });
+
+test("explicit source application reserves a checkout and releases queued development exactly once", async () => {
+  const queue = new TaskQueue(() => 2),
+    started = jest.fn();
+  const release = queue.reserve("apply-task", "source");
+  expect(queue.busy).toBe(true);
+  expect(() => queue.reserve("other-apply", "source")).toThrow();
+  expect(() => queue.reserve("apply-task", "other")).toThrow();
+  queue.enqueue("develop-task", "source", async () => {
+    started();
+  });
+  expect(started).not.toHaveBeenCalled();
+  release();
+  release();
+  await flush();
+  expect(started).toHaveBeenCalledTimes(1);
+  expect(queue.busy).toBe(false);
+  queue.close();
+  expect(() => queue.reserve("closed", "source")).toThrow();
+});
+
+test("application cannot jump ahead of an already queued original-checkout job", async () => {
+  const queue = new TaskQueue(() => 1),
+    held = pending();
+  queue.enqueue("busy", "other", () => held.promise);
+  queue.enqueue("waiting", "source", async () => {});
+  expect(() => queue.reserve("apply", "source")).toThrow();
+  held.finish();
+  await flush();
+});

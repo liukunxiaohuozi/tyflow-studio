@@ -32,7 +32,7 @@ export function statusLabel(status: TaskStatus) {
     ready: I18nT("待确认", "Ready"),
     developing: I18nT("开发中", "Developing"),
     "waiting-test": I18nT("待测试", "Awaiting tests"),
-    "waiting-review": I18nT("待人工验证", "Awaiting manual review"),
+    "waiting-review": I18nT("开发完成，待验收", "Development complete, awaiting acceptance"),
     testing: I18nT("测试中", "Testing"),
     starting: I18nT("启动中", "Starting"),
     review: I18nT("待验收", "Awaiting acceptance"),

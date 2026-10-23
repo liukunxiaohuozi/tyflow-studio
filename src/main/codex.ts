@@ -119,7 +119,6 @@ export async function resolveCodex(
         timeout: 15000,
       });
       for (const flag of [
-        "--ignore-user-config",
         "--ephemeral",
         "--output-schema",
         "--approve-for-me",

@@ -8,12 +8,14 @@ export default function SupplementDialog({
   onTask,
   report,
   close,
+  continueWith,
 }: {
   api: StudioAPI;
   task: Task;
   onTask: (task: Task) => void;
   report: (message: string, error?: boolean) => void;
   close: () => void;
+  continueWith?: "analyze";
 }) {
   const [text, setText] = useState("");
   const [assets, setAssets] = useState<Task["assets"]>([]);
@@ -45,11 +47,12 @@ export default function SupplementDialog({
     }
     setBusy(true);
     try {
-      onTask(
-        await api.taskAction(task.id, resume ? "retry" : "supplement", {
+      const updated = await api.taskAction(task.id, resume ? "retry" : "supplement", {
           supplement: { text, assetIds: assets.map((a) => a.id) },
-        }),
-      );
+        });
+      onTask(updated);
+      if (continueWith === "analyze")
+        onTask(await api.taskAction(updated.id, "analyze"));
       close();
     } catch (error) {
       report((error as Error).message, true);
@@ -106,7 +109,9 @@ export default function SupplementDialog({
             disabled={busy}
             onClick={() => void save()}
           >
-            {resume
+            {continueWith === "analyze"
+              ? I18nT("保存补充并继续分析", "Save and continue analysis")
+              : resume
               ? I18nT("保存补充并继续当前阶段", "Save and resume current stage")
               : I18nT("保存补充信息", "Save additional context")}
           </button>

@@ -68,6 +68,37 @@ test("timeout terminates a running process and reports the timeout", async () =>
   ).rejects.toThrow(/超时/);
 });
 
+test("explicit null deadline installs no fallback timer while ordinary commands retain theirs", async () => {
+  const timers = jest.spyOn(global, "setTimeout");
+  try {
+    const command = script("setTimeout(()=>console.log('complete'),150)");
+    await expect(
+      runCommand(command, [], { cwd: root, timeout: null }),
+    ).resolves.toContain("complete");
+    expect(timers.mock.calls.some(([, ms]) => ms === 600000)).toBe(false);
+    timers.mockClear();
+    await runCommand(command, [], { cwd: root });
+    expect(timers.mock.calls.some(([, ms]) => ms === 600000)).toBe(true);
+  } finally {
+    timers.mockRestore();
+  }
+});
+
+test("no-deadline execution still obeys manual cancellation during reconnect", async () => {
+  const controller = new AbortController();
+  await expect(
+    runCommand(script("console.log('retrying');setInterval(()=>{},1000)"), [], {
+      cwd: root,
+      timeout: null,
+      idleTimeout: 0,
+      signal: controller.signal,
+      onLine: (line) => {
+        if (line === "retrying") controller.abort();
+      },
+    }),
+  ).rejects.toMatchObject({ reason: "CANCELLED" });
+});
+
 test("idle watchdog warns and terminates silent commands with a recoverable reason", async () => {
   const warnings: number[] = [];
   await expect(

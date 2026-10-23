@@ -78,3 +78,57 @@ test("preparation requirements preserve the approved browser matrix", () => {
   expect(validationPending("TEST_BROWSER_PREPARATION")).toBe(true);
   expect(validationPending("CASE_FAILED")).toBe(false);
 });
+
+test("static checks and excluded browser names do not request a login session", () => {
+  const plan = (
+    title: string,
+    steps: string[],
+    browsers?: ("chrome" | "firefox")[],
+  ) => ({
+    summary: "",
+    steps: [],
+    risks: [],
+    blockers: [],
+    testCases: [
+      {
+        id: "T1",
+        title,
+        steps,
+        expected: "符合需求",
+        ...(browsers === undefined ? {} : { browsers }),
+      },
+    ],
+  });
+  expect(
+    requiredTestBrowsers(
+      plan("静态源码检查保存文案", ["只读取文件，不启动浏览器"]),
+    ),
+  ).toEqual([]);
+  expect(
+    requiredTestBrowsers(
+      plan("静态检查", ["不需要 Chrome 或 Firefox，不做浏览器测试"]),
+    ),
+  ).toEqual([]);
+  expect(
+    requiredTestBrowsers(plan("保存文案检查", ["读取页面文件"], [])),
+  ).toEqual([]);
+  expect(
+    requiredTestBrowsers(plan("Firefox 兼容", ["验证保存成功"], ["firefox"])),
+  ).toEqual(["firefox"]);
+  expect(
+    requiredTestBrowsers(
+      plan("兼容测试", ["无需 Firefox，在 Chrome 点击保存并检查页面"]),
+    ),
+  ).toEqual(["chrome"]);
+  expect(
+    requiredTestBrowsers(plan("保存设置", ["保存设置并验证成功"])),
+  ).toEqual(["chrome"]);
+  expect(
+    requiredTestBrowsers(
+      plan("静态检查及兼容验证", ["Chrome 和 Firefox 可读性验证"]),
+    ),
+  ).toEqual(["chrome", "firefox"]);
+  expect(
+    requiredTestBrowsers(plan("静态检查及浏览器兼容验证", ["验证浏览器渲染"])),
+  ).toEqual(["chrome"]);
+});

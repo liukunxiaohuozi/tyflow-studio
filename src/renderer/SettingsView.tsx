@@ -881,64 +881,10 @@ export default function SettingsView({
                     "Development runs in parallel; excess tasks queue. By default, projects start only when requested and share one verification window.",
                   )}
                 </p>
-                <div className="form-row">
-                  <Field
-                    label={I18nT(
-                      "Agent 无输出超时（分钟）",
-                      "Agent idle timeout (minutes)",
-                    )}
-                  >
-                    <input
-                      type="number"
-                      min={1}
-                      max={30}
-                      value={
-                        (draft.execution?.agentIdleTimeoutMs ?? 180000) / 60000
-                      }
-                      onChange={(e) =>
-                        setDraft({
-                          ...draft,
-                          execution: {
-                            concurrency: 2,
-                            previewMode: "single",
-                            ...draft.execution,
-                            agentIdleTimeoutMs: Number(e.target.value) * 60000,
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field
-                    label={I18nT(
-                      "Agent 单次执行上限（分钟）",
-                      "Agent execution limit (minutes)",
-                    )}
-                  >
-                    <input
-                      type="number"
-                      min={1}
-                      max={60}
-                      value={
-                        (draft.execution?.agentTimeoutMs ?? 1800000) / 60000
-                      }
-                      onChange={(e) =>
-                        setDraft({
-                          ...draft,
-                          execution: {
-                            concurrency: 2,
-                            previewMode: "single",
-                            ...draft.execution,
-                            agentTimeoutMs: Number(e.target.value) * 60000,
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                </div>
                 <p>
                   {I18nT(
-                    "超时会停止当前 Agent 并保留已有代码，由你确认后重试；不会自动提交或推送。",
-                    "Timeout stops the Agent and preserves code. Retry requires your confirmation; no automatic commit or push.",
+                    "跟随 Codex 执行：不设置无输出或总执行时限。Codex 仍在执行、请求或重连时继续等待，明确失败或异常退出时才报告 Agent 失败。可随时手动暂停或终止；代码与测试检查仍会保留，不会自动提交或推送。",
+                    "Follow Codex execution: no idle or total deadline. Keep waiting while Codex runs, requests, or reconnects; report Agent failure only on explicit failure or abnormal exit. You can pause or stop manually. Code and test checks remain; no automatic commit or push.",
                   )}
                 </p>
                 <Field label={I18nT("体检项目", "Project for setup checks")}>

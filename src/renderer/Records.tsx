@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import {
-  ArrowRight,
   ChevronLeft,
   ChevronRight,
   Plus,
@@ -15,14 +14,14 @@ export default function Records({
   open,
   create,
   projectScope,
-  configure,
+  remove,
 }: {
   tasks: Task[];
   settings: Settings;
   open: (task: Task) => void;
   create: () => void;
   projectScope?: Settings["projects"][number];
-  configure?: () => void;
+  remove: (task: Task) => Promise<void>;
 }) {
   const tasks = useMemo(
     () =>
@@ -108,16 +107,9 @@ export default function Records({
           </p>
         </div>
         <div className="page-heading-actions">
-          {projectScope && configure && (
-            <button onClick={configure}>
-              {I18nT("管理项目配置", "Manage project settings")}
-            </button>
-          )}
           <button className="primary" onClick={create}>
             <Plus size={16} />
-            {projectScope
-              ? I18nT("在此项目新建任务", "New task in this project")
-              : I18nT("新建任务", "New task")}
+            {I18nT("新建任务", "New task")}
           </button>
         </div>
       </header>
@@ -226,7 +218,7 @@ export default function Records({
                     <th>{I18nT("项目", "Project")}</th>
                     <th>{I18nT("状态", "Status")}</th>
                     <th>{I18nT("更新时间", "Updated")}</th>
-                    <th />
+                    <th>{I18nT("操作", "Actions")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -263,8 +255,39 @@ export default function Records({
                         <td className="date-cell">
                           {new Date(task.updatedAt).toLocaleString()}
                         </td>
-                        <td>
-                          <ArrowRight size={16} />
+                        <td className="record-actions">
+                          <button
+                            className="text-button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              open(task);
+                            }}
+                          >
+                            {I18nT("查看", "View")}
+                          </button>
+                          <button
+                            className="text-button danger-link"
+                            disabled={activeStatuses.includes(task.status)}
+                            title={
+                              activeStatuses.includes(task.status)
+                                ? I18nT("请先停止正在执行的任务", "Stop the running task before deleting it")
+                                : undefined
+                            }
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (
+                                window.confirm(
+                                  I18nT(
+                                    `确定删除任务“${task.title}”及其本地执行记录？此操作无法撤销。`,
+                                    `Delete “${task.title}” and its local execution records? This cannot be undone.`,
+                                  ),
+                                )
+                              )
+                                void remove(task);
+                            }}
+                          >
+                            {I18nT("删除", "Delete")}
+                          </button>
                         </td>
                       </tr>
                     ))}

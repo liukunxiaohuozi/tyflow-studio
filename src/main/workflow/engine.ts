@@ -43,6 +43,9 @@ export class WorkflowEngine {
   enqueue(id: string, resource: string, run: () => Promise<void>) {
     this.queue.enqueue(id, resource, run);
   }
+  reserve(id: string, resource: string) {
+    return this.queue.reserve(id, resource);
+  }
   cancelWaiting(id: string) {
     this.queue.cancelWaiting(id);
   }
@@ -222,7 +225,9 @@ export class WorkflowEngine {
     this.hooks.log(
       task,
       task.stage ?? stage,
-      "修改已完成，可直接在你已打开的浏览器查看热更新；未自动启动项目或浏览器。",
+      task.workspace
+        ? "开发检查已完成，修改保存在独立工作区；原项目页面不会自动热更新。请验证任务工作区代码，尚未合回原目录或人工验收。"
+        : "开发检查已完成，可在原项目已打开的浏览器查看效果；尚未人工验收，未自动启动项目或浏览器。",
     );
     this.hooks.save(task);
   }

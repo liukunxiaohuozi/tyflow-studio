@@ -47,32 +47,38 @@ export function failureDetail(
       "已完成检查点会按基线与证据有效性决定是否复用",
     ],
     recommendedActions:
-      typed?.code === "TEST_BROWSER_PREPARATION"
+      typed?.code === "DEVELOPMENT_VALIDATION_INCOMPLETE" ||
+      typed?.code === "DEVELOPMENT_CHECK_FAILED"
         ? [
-            "点击“测试准备”：填写非生产测试地址，打开专用 Chrome/Firefox 并手动登录；不要在补充信息中填写密码",
-            "确认页面运行的是任务工作区代码及可操作的测试数据范围，再继续验证；无需重新评估或开发",
+            "查看具体检查项：已保存代码不等于开发检查已通过；历史质量问题须有同环境基线证据，不能直接忽略",
+            "点击“重新执行开发检查”只补齐验证，不重复实现；若确认实现错误，再选择“重新修复”",
           ]
-        : typed?.code === "TEST_INCOMPLETE"
+        : typed?.code === "TEST_BROWSER_PREPARATION"
           ? [
-              "查看未完成用例的具体原因，补齐测试地址、启动项目、浏览器工具或测试账号等所需条件；无需重录需求",
-              "在原任务补充信息后重试测试；有效的已通过检查点会保留，未执行用例不会算作通过",
+              "点击“测试准备”：填写非生产测试地址，打开专用 Chrome/Firefox 并手动登录；不要在补充信息中填写密码",
+              "确认页面运行的是任务工作区代码及可操作的测试数据范围，再继续验证；无需重新评估或开发",
             ]
-          : typed?.code === "AGENT_READ_BLOCKED"
+          : typed?.code === "TEST_INCOMPLETE"
             ? [
-                "查看执行日志中的命令拒绝或沙箱初始化原因，联系 Studio 维护者处理；不要关闭安全限制",
-                "处理后在原任务重试源码评估；无需补充需求或重建任务",
+                "查看未完成用例的具体原因，补齐测试地址、启动项目、浏览器工具或测试账号等所需条件；无需重录需求",
+                "在原任务补充信息后重试测试；有效的已通过检查点会保留，未执行用例不会算作通过",
               ]
-            : typed?.code === "AGENT_PLAN_INVALID"
+            : typed?.code === "AGENT_READ_BLOCKED"
               ? [
-                  "检查提示中具体计划步骤的文件范围或字段",
-                  "纯验证动作应放入测试用例；补充实际文件线索后重试此检查点，无需重建任务",
+                  "查看执行日志中的命令拒绝或沙箱初始化原因，联系 Studio 维护者处理；不要关闭安全限制",
+                  "处理后在原任务重试源码评估；无需补充需求或重建任务",
                 ]
-              : typed?.code === "NETWORK_LOST" && kind === "agent"
+              : typed?.code === "AGENT_PLAN_INVALID"
                 ? [
-                    "检查系统代理、网络连接及 Codex 服务可达性",
-                    "连接恢复后重试当前检查点；无需重录需求，已有代码保留",
+                    "检查提示中具体计划步骤的文件范围或字段",
+                    "纯验证动作应放入测试用例；补充实际文件线索后重试此检查点，无需重建任务",
                   ]
-                : operations[kind],
+                : typed?.code === "NETWORK_LOST" && kind === "agent"
+                  ? [
+                      "检查系统代理、网络连接及 Codex 服务可达性",
+                      "连接恢复后重试当前检查点；无需重录需求，已有代码保留",
+                    ]
+                  : operations[kind],
     retryable: typed?.retryable ?? true,
     at: new Date().toISOString(),
   };

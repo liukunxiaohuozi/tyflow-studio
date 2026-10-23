@@ -84,8 +84,10 @@ export class CodexAgentProvider implements AgentProvider {
       ...request,
       log: (message, error) => log(redact(message, secrets), error),
     };
-    const settings = this.settings();
-    const idle = settings.execution?.agentIdleTimeoutMs ?? 180_000;
+    // Follow Codex's lifecycle, including reasoning and reconnects. Neither
+    // legacy idle nor total settings may kill a still-running Agent.
+    const idle = 0;
+    request.activity(new Date().toISOString(), idle);
     const directory = this.evidence.runDirectory(request.taskId);
     const schema = path.join(directory, "schema.json"),
       output = path.join(directory, "result.json");
@@ -94,6 +96,7 @@ export class CodexAgentProvider implements AgentProvider {
       `Codex · ${request.stage === "analysis" ? "只读评估" : "工作区执行"} · ${request.projectName}`,
     );
     let eventFailure = "";
+    let failedTurn = false;
     let readBlocked = false;
     try {
       const networkEnvironment = await this.environment();
@@ -132,13 +135,13 @@ export class CodexAgentProvider implements AgentProvider {
           signal: request.signal,
           input: request.prompt,
           env,
-          timeout: settings.execution?.agentTimeoutMs ?? 30 * 60_000,
+          timeout: null,
           idleTimeout: idle,
-          idleWarningAfter: Math.min(60_000, Math.floor(idle / 2)),
+          idleWarningAfter: 60_000,
           onActivity: (at) => request.activity(at, idle),
           onIdle: (elapsed) =>
             request.log(
-              `Agent 已 ${Math.floor(elapsed / 1000)} 秒无输出，正在等待；达到无输出超时后将保留代码并停止，可从当前检查点恢复。`,
+              `Agent 已 ${Math.floor(elapsed / 1000)} 秒无输出，暂未收到新输出，继续等待；不会仅因无输出停止。Studio 跟随 Codex 执行与重连，不设置总执行时限；可手动暂停或终止。`,
             ),
           onLine: (line, error) => {
             try {
@@ -165,7 +168,12 @@ export class CodexAgentProvider implements AgentProvider {
                 event.type === "turn.failed"
               ) {
                 eventFailure = JSON.stringify(event);
+                if (event.type === "turn.failed") failedTurn = true;
                 request.log(eventFailure, true);
+              } else if (event.type === "turn.completed" && !failedTurn) {
+                // A retry diagnostic is not a final failure when Codex later
+                // completes. Never clear an explicit failed turn, however.
+                eventFailure = "";
               }
             } catch {
               if (
