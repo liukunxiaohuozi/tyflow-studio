@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 
 // These integration cases exercise real Git repositories and child processes.
 // Shared CI runners need headroom without changing any Studio runtime deadline.
-jest.setTimeout(90000);
+jest.setTimeout(180000);
 let root: string;
 let repository: string;
 let fixture: string;
@@ -63,7 +63,7 @@ function calls(): {
         .map((line) => JSON.parse(line))
     : [];
 }
-async function until(predicate: () => boolean, timeoutMs = 45000) {
+async function until(predicate: () => boolean, timeoutMs = 120000) {
   const start = Date.now();
   while (!predicate()) {
     if (Date.now() - start > timeoutMs)

@@ -23,7 +23,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - name: Run regression and real Git integration on this platform
-        run: npm test
+        run: node scripts/run-ci-tests.cjs
       - name: Verify real Electron updater redirects and downloads
         run: node scripts/verify-update-transport.cjs
       - run: npm run scan

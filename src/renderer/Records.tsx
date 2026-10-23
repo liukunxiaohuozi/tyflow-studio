@@ -278,9 +278,9 @@ export default function Records({
                               if (
                                 window.confirm(
                                   I18nT(
-                                    `确定删除任务“${task.title}”及其本地执行记录？此操作无法撤销。`,
-                                    `Delete “${task.title}” and its local execution records? This cannot be undone.`,
-                                  ),
+                                    "确定删除任务“{title}”及其本地执行记录？此操作无法撤销。",
+                                    "Delete “{title}” and its local execution records? This cannot be undone.",
+                                  ).replace("{title}", task.title),
                                 )
                               )
                                 void remove(task);
