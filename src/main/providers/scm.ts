@@ -36,6 +36,18 @@ import type {
 } from "../../shared/contracts";
 
 const LIMIT = 2 * 1024 * 1024;
+const CONVENTIONAL_COMMIT =
+  /^(?:\p{Extended_Pictographic}\ufe0f?\s*)?(?:revert:\s*)?(?:feat|fix|docs|ui|chore|locale|refactor|perf|workflow|build|ci|typos|tests|types|wip|release|dep)(?:\([^)\r\n]+\))?!?:\s+\S/iu;
+
+function commitSubject(message: string) {
+  const sanitized = message.replace(/[\r\n\0]+/g, " ").trim();
+  if (!sanitized) throw new Error("提交说明不能为空");
+  return (CONVENTIONAL_COMMIT.test(sanitized)
+    ? sanitized
+    : `chore(studio): ${sanitized}`
+  ).slice(0, 200);
+}
+
 async function run(
   directory: string,
   args: string[],
@@ -648,11 +660,7 @@ export async function commitAndPush(
   runtimeEnv: NodeJS.ProcessEnv = {},
 ): Promise<{ commit: string; branch: string; remote: string }> {
   safeReference(branch);
-  const subject = message
-    .replace(/[\r\n\0]+/g, " ")
-    .trim()
-    .slice(0, 200);
-  if (!subject) throw new Error("提交说明不能为空");
+  const subject = commitSubject(message);
   return withGitAccess(
     project,
     secret,

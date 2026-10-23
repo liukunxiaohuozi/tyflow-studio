@@ -813,7 +813,7 @@ export class StudioService {
                 project,
                 this.vault.get("git:" + project.id),
                 branch,
-                task.title,
+                `${task.kind === "bug" ? "fix" : "feat"}(studio): ${task.title}`,
                 settings.developer,
                 task.delivery?.commit,
                 (committed) => {

@@ -200,6 +200,29 @@ test("passes the Studio runtime environment through git commit hooks", async () 
   expect(git(upstream, "rev-parse", "refs/heads/main")).toBe(delivered.commit);
 });
 
+test("normalizes a generated task title for conventional commit hooks", async () => {
+  const hooks = path.join(local, ".git", "hooks");
+  const hook = path.join(hooks, "commit-msg");
+  fs.writeFileSync(
+    hook,
+    '#!/bin/sh\ngrep -Eq "^(feat|fix|chore)\\(studio\\): .+" "$1" || exit 1\n',
+  );
+  fs.chmodSync(hook, 0o755);
+  fs.writeFileSync(path.join(local, "generated-title.txt"), "ready");
+
+  const delivered = await commitAndPush(
+    project,
+    undefined,
+    "main",
+    "告警配置缺少分组字段",
+    { name: "Fixture", email: "fixture@example.invalid" },
+  );
+
+  expect(git(local, "show", "-s", "--format=%s", delivered.commit)).toBe(
+    "chore(studio): 告警配置缺少分组字段",
+  );
+});
+
 test("fetches every remote branch without letting conflicting remote tags block synchronization", async () => {
   const head = git(local, "rev-parse", "HEAD");
   git(seed, "branch", "feature/remote-only");
