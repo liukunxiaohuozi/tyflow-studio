@@ -115,6 +115,13 @@ process.stdin.on("end", () => {
       const results = {
         analysis: {
           summary: "Fixture assessment",
+          deliveryLevel: prompt.includes('"mode":"existing"') ? "L1" : "L2",
+          orchestration: {
+            useTyflow: !prompt.includes('"mode":"existing"'),
+            useAutomatedTests: false,
+            verificationScope: "Run focused requirement and regression checks",
+            reason: "Fixture-selected delivery scope",
+          },
           requirements: [
             {
               id: "REQ-001",
@@ -264,8 +271,11 @@ process.stdin.on("end", () => {
       const diagnosisResult = schema.properties?.rootCause
         ? {
             summary: "Fixture root-cause investigation",
-            rootCause: "The fixture call path returns the wrong controlled value.",
-            evidence: ["Read-only fixture source inspection confirmed the call path."],
+            rootCause:
+              "The fixture call path returns the wrong controlled value.",
+            evidence: [
+              "Read-only fixture source inspection confirmed the call path.",
+            ],
             affectedFiles: ["verify.cjs"],
             recommendation: "Authorize a focused repair in the same task.",
             confidence: "high",

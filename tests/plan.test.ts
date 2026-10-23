@@ -4,6 +4,13 @@ import { ProviderFailure, failureDetail } from "../src/main/workflow/failures";
 function fixture() {
   return {
     summary: "APP 保存提示文案变更",
+    deliveryLevel: "L1" as const,
+    orchestration: {
+      useTyflow: false,
+      useAutomatedTests: false,
+      verificationScope: "验证提示文案并检查保存行为",
+      reason: "仅修改已定位的提示文案，影响范围小",
+    },
     requirements: [
       {
         id: "REQ-001",

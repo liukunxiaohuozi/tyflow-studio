@@ -31,10 +31,7 @@ import BranchSelection from "./BranchSelection";
 import RecoveryPanel from "./RecoveryPanel";
 import SupplementDialog from "./SupplementDialog";
 import RequirementAssets from "./RequirementAssets";
-import {
-  deriveExecutionPolicy,
-  inferTaskIntent,
-} from "../shared/task-intent";
+import { deriveExecutionPolicy, inferTaskIntent } from "../shared/task-intent";
 interface Props {
   api?: StudioAPI;
   simulated?: boolean;
@@ -131,7 +128,6 @@ export default function TaskEditor({
   const executionPolicy = deriveExecutionPolicy(input);
   const quick = executionPolicy.workflowMode === "quick";
   const diagnosed = Boolean(task?.diagnosis && !editMode);
-  const direct = inferredIntent.mode === "implement";
   const native = Boolean(api);
   const running = Boolean(task && activeStatuses.includes(task.status));
   const confirm = Boolean(task?.plan && !editMode);
@@ -884,13 +880,22 @@ export default function TaskEditor({
               <Notice>
                 <strong>
                   {inferredIntent.mode === "diagnose"
-                    ? I18nT("仅分析，不修改代码", "Diagnosis only; no code changes")
-                    : executionPolicy.workflowMode === "quick"
-                      ? I18nT("直接实施，小范围验证", "Direct implementation with focused checks")
-                      : I18nT("完整开发与验证", "Full development and verification")}
+                    ? I18nT(
+                        "仅分析，不修改代码",
+                        "Diagnosis only; no code changes",
+                      )
+                    : I18nT(
+                        "待 Codex 分级并生成计划",
+                        "Awaiting Codex classification and plan",
+                      )}
                 </strong>
                 <br />
-                {executionPolicy.reason}
+                {inferredIntent.mode === "diagnose"
+                  ? executionPolicy.reason
+                  : I18nT(
+                      "开始后先进行只读评估，自动判定 L1/L2/L3，并生成开发计划与测试用例；确认前不会修改代码。",
+                      "Start with a read-only L1/L2/L3 assessment and generate a development plan and test cases; no code changes occur before confirmation.",
+                    )}
                 <br />
                 {I18nT(
                   "Studio 会根据意图和改动风险自主选择 Codex Skill；无需手动选择 Tyflow 或自动化测试。",
@@ -909,7 +914,8 @@ export default function TaskEditor({
               settings={settings}
               patch={(value) => {
                 const branch = value.branch ?? input.branch;
-                const workspaceMode = value.workspaceMode ?? input.workspaceMode;
+                const workspaceMode =
+                  value.workspaceMode ?? input.workspaceMode;
                 const usesCurrentBranch =
                   branch.mode === "existing" && branch.base === repo?.branch;
                 patch({
@@ -1002,6 +1008,28 @@ export default function TaskEditor({
             </div>
             <div className="task-summary">
               <p className="prewrap">{task?.plan?.summary}</p>
+              <div className="document-buttons">
+                <span className="button-count">
+                  {task?.plan?.deliveryLevel ?? "L2"}
+                </span>
+                <span className="button-count">
+                  {task?.plan?.orchestration?.useTyflow
+                    ? I18nT("使用 Tyflow", "Use Tyflow")
+                    : I18nT("Codex 直接规划", "Codex direct planning")}
+                </span>
+                <span className="button-count">
+                  {task?.plan?.orchestration?.useAutomatedTests
+                    ? I18nT("自动化测试", "Automated tests")
+                    : I18nT("聚焦自验", "Focused verification")}
+                </span>
+              </div>
+              {task?.plan?.orchestration && (
+                <p className="muted prewrap">
+                  {task.plan.orchestration.reason}
+                  {" · "}
+                  {task.plan.orchestration.verificationScope}
+                </p>
+              )}
               <div className="document-buttons">
                 <button onClick={() => setDialog("plan")}>
                   <FileText size={16} />
@@ -1371,15 +1399,15 @@ export default function TaskEditor({
                         "直接修改当前项目，保存后在你已打开的浏览器查看热更新。",
                         "Edit the current project directly; inspect hot reload in your existing browser.",
                       )
-                  : input.kind === "bug"
-                    ? I18nT(
-                        "直接调用 Codex 在所选分支定位、修复并完成必要检查，然后启动项目供你验收。",
-                        "Call Codex directly to diagnose, fix and run required checks on the selected branch, then launch the project for review.",
-                      )
-                    : I18nT(
-                        "将基于所选分支进行只读评估，不修改代码。",
-                        "Run a read-only assessment against the selected branch without modifying code.",
-                      )}
+                    : input.kind === "bug"
+                      ? I18nT(
+                          "直接调用 Codex 在所选分支定位、修复并完成必要检查，然后启动项目供你验收。",
+                          "Call Codex directly to diagnose, fix and run required checks on the selected branch, then launch the project for review.",
+                        )
+                      : I18nT(
+                          "将基于所选分支进行只读评估，不修改代码。",
+                          "Run a read-only assessment against the selected branch without modifying code.",
+                        )}
           </span>
         </div>
         <div className="actions">
@@ -1396,8 +1424,8 @@ export default function TaskEditor({
               {inferredIntent.mode === "diagnose"
                 ? I18nT("停止分析", "Stop diagnosis")
                 : input.kind === "bug"
-                ? I18nT("停止修复", "Stop fixing")
-                : I18nT("停止评估", "Stop assessment")}
+                  ? I18nT("停止修复", "Stop fixing")
+                  : I18nT("停止评估", "Stop assessment")}
             </button>
           ) : (
             <>
@@ -1463,9 +1491,7 @@ export default function TaskEditor({
                           (input.kind === "text" && a.documents?.length),
                       ))
                   }
-                  onClick={() =>
-                    continueAction(diagnosed || direct ? "fix" : "analyze")
-                  }
+                  onClick={() => continueAction(diagnosed ? "fix" : "analyze")}
                 >
                   {busy ? (
                     <Loader2 className="spin" size={16} />
@@ -1476,7 +1502,7 @@ export default function TaskEditor({
                   )}
                   {diagnosed
                     ? I18nT("按分析结果继续修复", "Fix using this diagnosis")
-                    : direct || inferredIntent.mode === "diagnose"
+                    : inferredIntent.mode === "diagnose"
                       ? I18nT("开始", "Start")
                       : task?.plan
                         ? I18nT("重新评估", "Reassess")

@@ -1,10 +1,6 @@
 export type TaskKind = "design" | "text" | "bug";
 export type TaskIntentMode =
-  | "diagnose"
-  | "implement"
-  | "plan"
-  | "verify"
-  | "explain";
+  "diagnose" | "implement" | "plan" | "verify" | "explain";
 export type TaskStatus =
   | "queued"
   | "draft"
@@ -126,6 +122,13 @@ export interface PlanStep {
 }
 export interface Plan {
   summary: string;
+  deliveryLevel?: "L1" | "L2" | "L3";
+  orchestration?: {
+    useTyflow: boolean;
+    useAutomatedTests: boolean;
+    verificationScope: string;
+    reason: string;
+  };
   requirements?: RequirementItem[];
   planSteps?: PlanStep[];
   steps: string[];
@@ -288,7 +291,11 @@ export interface Task extends TaskInput {
     };
   };
   queued?: { action: TaskAction; at: string };
-  runtime?: { startScript: string; targetUrl: string };
+  runtime?: {
+    startScript: string;
+    targetUrl: string;
+    reusedExisting?: boolean;
+  };
   runs?: RunRecord[];
   id: string;
   status: TaskStatus;

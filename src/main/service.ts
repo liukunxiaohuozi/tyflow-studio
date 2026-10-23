@@ -56,10 +56,7 @@ import { killTree, resolveCommand, which } from "./process";
 import { resolveCodex } from "./codex";
 import { WeComNotifier, type WeComTransport } from "./providers/wecom";
 import type { TaskNotification } from "./providers/notification";
-import {
-  deriveExecutionPolicy,
-  inferTaskIntent,
-} from "../shared/task-intent";
+import { deriveExecutionPolicy, inferTaskIntent } from "../shared/task-intent";
 
 interface Credentials {
   available(): boolean;
@@ -596,14 +593,20 @@ export class StudioService {
     return this.publish(task);
   }
   public deleteTask(id: string) {
-    if (this.workflow.has(id)) throw new Error("正在执行或排队的任务无法删除，请先停止任务");
+    if (this.workflow.has(id))
+      throw new Error("正在执行或排队的任务无法删除，请先停止任务");
     const task = this.store.getTask(id);
-    if (["queued", "analyzing", "developing", "testing", "starting"].includes(task.status))
+    if (
+      ["queued", "analyzing", "developing", "testing", "starting"].includes(
+        task.status,
+      )
+    )
       throw new Error("正在执行或排队的任务无法删除，请先停止任务");
     this.store.deleteTask(id);
     for (const directory of ["runs", "evidence"]) {
       const target = path.join(this.store.directory, directory, id);
-      if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
+      if (fs.existsSync(target))
+        fs.rmSync(target, { recursive: true, force: true });
     }
   }
   private publish(task: Task) {
@@ -1151,8 +1154,14 @@ export class StudioService {
   }
   private context(task: Task, includeWorkflow = true) {
     const settings = this.store.settings();
+    const tyflowWorkflow = path.join(
+      settings.agent.tyflowDirectory,
+      "shared",
+      "WORKFLOW.md",
+    );
+    const tyflowAvailable = fs.existsSync(tyflowWorkflow);
     const workflow = includeWorkflow
-      ? ` Read applicable AGENTS.md. Autonomously discover and use installed skills only when they materially help this request. The Tyflow workflow is available at ${path.join(settings.agent.tyflowDirectory, "shared", "WORKFLOW.md")}; use it for substantial TingYun delivery work, but do not force it for a diagnosis, explanation, copy-only edit, or small focused fix. Choose the smallest sufficient verification scope.`
+      ? ` Read applicable AGENTS.md. Autonomously discover and use installed skills only when they materially help this request. Tyflow workflow path: ${tyflowWorkflow} (${tyflowAvailable ? "available" : "unavailable"}). First classify the delivery as L1/L2/L3 from requirement and repository risk. L1 may skip Tyflow. For L2/L3, read and follow Tyflow when it materially improves planning or delivery; if a capability you decide is required is unavailable, report it as a blocker. Autonomously choose the smallest sufficient verification scope.`
       : " Read applicable AGENTS.md. Autonomously use relevant diagnostic skills when useful, but do not load delivery or test workflows unless the request requires them.";
     const supplements = (task.supplements ?? [])
       .map((item, index) => {
@@ -1266,14 +1275,6 @@ export class StudioService {
     if ((task.intent ?? inferTaskIntent(task)).mode === "diagnose")
       return this.diagnose(task, signal);
     const settings = this.store.settings();
-    if (
-      !fs.existsSync(
-        path.join(settings.agent.tyflowDirectory, "shared", "WORKFLOW.md"),
-      )
-    )
-      throw new Error(
-        "未找到 Tyflow WORKFLOW.md，请在开发配置中设置 Tyflow 目录",
-      );
     const project = this.project(task.projectId);
     this.log(task, "analysis", "同步远程分支和标签，保留本地工作区");
     const info = await this.checkpoint(
@@ -1327,7 +1328,7 @@ export class StudioService {
                 (task.plan && task.planFeedback
                   ? `The user is revising the previous assessment. Keep the original requirement intent, but regenerate the implementation plan and test cases to satisfy the feedback. Do not ignore the feedback. Previous plan JSON:\n${JSON.stringify(task.plan)}\nUser feedback on the plan and test cases:\n${task.planFeedback}\n`
                   : "") +
-                `Read-only assessment ONLY; do not modify any files or run write-producing commands. User has not yet approved execution of this particular task. Inspect source and relevant design assets; produce implementation plan and concrete test cases in Chinese. For Bug inputs, do not claim reproduction without evidence; include reproduction first and blockers for missing environment. Selected branch configuration: ${JSON.stringify(task.branch)}. The selected target commit is ${task.targetCommit}. Inspect that exact tree using git show / git ls-tree, even if current checkout differs. Do not assess another revision. Use structured result schema. Include blockers only for information required to proceed. Every implementation planStep must declare real non-empty expectedFiles and requirement covers. Put pure verification actions in testCases, not standalone implementation steps with empty file scopes. Never invent paths or use a repository-wide wildcard to bypass scope control.` +
+                `Read-only assessment ONLY; do not modify files or run write-producing commands. The user has not approved implementation. Inspect the requirement, exact source revision, dependencies and affected callers, then classify deliveryLevel: L1 for narrow low-risk copy/style/local changes; L2 for ordinary cross-component, state or API behavior; L3 for core, broad architectural, security, permission, migration or high-risk changes. This classification is yours, not the user's. Every level MUST return a concrete implementation plan and test cases for human review before code changes. L1 may skip Tyflow and automated testing, but must define focused self-verification and regression-impact checks. For L2 independently decide whether Tyflow and automated tests materially help. L3 must use both when available. Record those choices and reasons in orchestration. If a required capability is unavailable, add a blocker rather than weakening the plan. For Bug inputs, do not claim reproduction without evidence; include reproduction first and blockers for missing environment. Selected branch configuration: ${JSON.stringify(task.branch)}. The selected target commit is ${task.targetCommit}. Inspect that exact tree using git show / git ls-tree, even if current checkout differs. Do not assess another revision. Produce the plan and concrete test cases in Chinese using the structured schema. Include blockers only for information required to proceed. Every implementation planStep must declare real non-empty expectedFiles and requirement covers. Put pure verification actions in testCases, not standalone implementation steps with empty file scopes. Never invent paths or use a repository-wide wildcard to bypass scope control.` +
                 feedback,
               planJsonSchema,
               signal,
@@ -1342,6 +1343,38 @@ export class StudioService {
       planSchema.parse(result),
       this.sourceKind(task),
     );
+    const level = task.plan.deliveryLevel ?? "L2";
+    if (level === "L3" && task.plan.orchestration) {
+      task.plan.orchestration.useTyflow = true;
+      task.plan.orchestration.useAutomatedTests = true;
+    }
+    const tyflowWorkflow = path.join(
+      settings.agent.tyflowDirectory,
+      "shared",
+      "WORKFLOW.md",
+    );
+    if (
+      task.plan.orchestration?.useTyflow &&
+      !fs.existsSync(tyflowWorkflow) &&
+      !task.plan.blockers.some((item) => item.includes("Tyflow"))
+    )
+      task.plan.blockers.push(
+        "本次计划需要 Tyflow，但当前未找到 Tyflow WORKFLOW.md；请先修复开发配置后重新评估。",
+      );
+    if (
+      task.plan.orchestration?.useAutomatedTests &&
+      !fs.existsSync(settings.agent.testSkill) &&
+      !task.plan.blockers.some((item) => item.includes("自动化测试"))
+    )
+      task.plan.blockers.push(
+        "本次计划需要自动化测试，但当前未找到测试 Skill；请先修复开发配置后重新评估。",
+      );
+    const requiresPreparedWorkspace =
+      task.branch.mode === "new" || task.workspaceMode === "isolated";
+    task.workflowMode =
+      level === "L1" && !requiresPreparedWorkspace ? "quick" : "standard";
+    task.autoTest =
+      level === "L3" || Boolean(task.plan.orchestration?.useAutomatedTests);
     task.planRevision++;
     task.planFeedback = undefined;
     task.gateReviews = {
@@ -2059,12 +2092,51 @@ export class StudioService {
         configured?.startScript ?? task.snapshot!.project.startScript,
       targetUrl: configured?.targetUrl ?? task.snapshot!.project.targetUrl,
     };
-    if (!info.scripts.includes(project.startScript))
-      throw new Error(`项目不存在启动脚本 ${project.startScript}`);
     let url = safeTargetUrl(project.targetUrl);
     task.stage = "startup";
     task.status = "starting";
     this.publish(task);
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(1500),
+        redirect: "manual",
+      });
+      await response.body?.cancel();
+      if (response.status) {
+        task.runtime = {
+          startScript: project.startScript,
+          targetUrl: url,
+          reusedExisting: true,
+        };
+        task.status = "review";
+        this.log(task, "startup", `检测到项目已经启动：${url}`, "success");
+        this.publish(task);
+        await this.openUrl(url, {
+          title: task.title,
+          branch: task.snapshot!.branch.name,
+          external: true,
+        });
+        return;
+      }
+    } catch {
+      this.log(task, "startup", "目标地址尚未运行，准备启动项目。", "info");
+    }
+    const startScript = info.scripts.includes(project.startScript)
+      ? project.startScript
+      : ["start:dev", "dev", "start", "serve"].find((script) =>
+          info.scripts.includes(script),
+        );
+    if (!startScript)
+      throw new Error(
+        `项目不存在启动脚本 ${project.startScript}，可用脚本：${info.scripts.join("、") || "无"}`,
+      );
+    if (startScript !== project.startScript)
+      this.log(
+        task,
+        "startup",
+        `配置的脚本 ${project.startScript} 不存在，自动使用 npm run ${startScript}`,
+        "info",
+      );
     for (const [owner, previous] of this.servers) {
       if (
         this.store.settings().execution?.previewMode === "multiple" &&
@@ -2125,33 +2197,16 @@ export class StudioService {
       target.port = String(port);
       url = safeTargetUrl(target.href);
     }
-    task.runtime = { startScript: project.startScript, targetUrl: url };
+    task.runtime = { startScript, targetUrl: url, reusedExisting: false };
     this.publish(task);
-    // An existing responder could be another project: refuse to silently attribute it to this task.
-    try {
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(1000),
-        redirect: "manual",
-      });
-      if (response.status) throw new Error("TARGET_IN_USE");
-    } catch (e) {
-      if (e instanceof Error && e.message === "TARGET_IN_USE")
-        throw new Error(
-          "目标地址已有服务响应，请关闭旧服务或配置独立端口后重试，避免打开错误项目",
-        );
-    }
-    this.log(
-      task,
-      "startup",
-      `启动 ${project.name} · npm run ${project.startScript}`,
-    );
+    this.log(task, "startup", `启动 ${project.name} · npm run ${startScript}`);
     const command = resolveCommand("npm", this.store.settings().agent.command);
     const child = spawn(
       command.executable,
       [
         ...command.args,
         "run",
-        project.startScript,
+        startScript,
         ...(multiple && task.workspace && isVite
           ? ["--", "--port", new URL(url).port, "--strictPort"]
           : []),
@@ -2214,9 +2269,11 @@ export class StudioService {
       }
       if (!ready)
         throw new Error("开发服务 120 秒内未就绪，请检查启动日志和目标地址");
+      this.log(task, "startup", `开发服务已就绪：${url}`, "success");
       await this.openUrl(url, {
         title: task.title,
         branch: task.snapshot!.branch.name,
+        external: true,
       });
       task.status = "review";
       this.log(task, "startup", "开发页已打开，等待人工验收。", "success");

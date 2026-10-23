@@ -77,6 +77,23 @@ export const planJsonSchema = {
   additionalProperties: false,
   properties: {
     summary: text(1, 16000),
+    deliveryLevel: { type: "string", enum: ["L1", "L2", "L3"] },
+    orchestration: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        useTyflow: { type: "boolean" },
+        useAutomatedTests: { type: "boolean" },
+        verificationScope: text(1, 4000),
+        reason: text(1, 4000),
+      },
+      required: [
+        "useTyflow",
+        "useAutomatedTests",
+        "verificationScope",
+        "reason",
+      ],
+    },
     requirements: list(requirementSchema, 0, 100),
     planSteps: { type: "array", items: planStepSchema, maxItems: 100 },
     steps: list(text(1, 8000), 1, 50),
@@ -86,6 +103,8 @@ export const planJsonSchema = {
   },
   required: [
     "summary",
+    "deliveryLevel",
+    "orchestration",
     "requirements",
     "planSteps",
     "steps",
@@ -245,7 +264,11 @@ export const diagnosisJsonSchema = {
       required: ["hash", "author", "committedAt", "message"],
     },
     versionInfo: { type: ["string", "null"], minLength: 1, maxLength: 4000 },
-    traceabilityNotes: { type: ["string", "null"], minLength: 1, maxLength: 8000 },
+    traceabilityNotes: {
+      type: ["string", "null"],
+      minLength: 1,
+      maxLength: 8000,
+    },
   },
   required: [
     "summary",

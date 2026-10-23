@@ -250,8 +250,8 @@ export function canAct(task: Task, action: TaskAction) {
     throw new Error(`当前状态 ${task.status} 不能执行 ${action}`);
   if (action === "repair" && (!task.snapshot || task.stage !== "test"))
     throw new Error("只有测试失败的已执行任务可修复并重测");
-  if (action === "fix" && task.kind !== "bug" && task.workflowMode !== "quick")
-    throw new Error("直接修复仅适用于 Bug 任务");
+  if (action === "fix" && task.kind !== "bug")
+    throw new Error("需求开发必须先完成分级、开发计划和测试用例评估");
   if (
     action === "fix" &&
     task.workflowMode === "quick" &&
@@ -296,6 +296,21 @@ export function redact(value: string, secrets: string[] = []): string {
 export const planSchema = z
   .object({
     summary: z.string().min(1).max(16000),
+    deliveryLevel: z.enum(["L1", "L2", "L3"]).default("L2"),
+    orchestration: z
+      .object({
+        useTyflow: z.boolean(),
+        useAutomatedTests: z.boolean(),
+        verificationScope: z.string().min(1).max(4000),
+        reason: z.string().min(1).max(4000),
+      })
+      .strict()
+      .default({
+        useTyflow: true,
+        useAutomatedTests: false,
+        verificationScope: "按计划执行必要验证",
+        reason: "旧版计划按标准流程兼容处理",
+      }),
     requirements: z
       .array(
         z

@@ -22,7 +22,6 @@ import type { StudioAPI, Task, TaskAction } from "../shared/contracts";
 import {
   activeStatuses,
   Notice,
-  Modal,
   PreviewDrawer,
   PlanDialog,
   Status,
@@ -113,7 +112,6 @@ export default function RunView({
   const [follow, setFollow] = useState(true);
   const [busy, setBusy] = useState(false);
   const [supplementOpen, setSupplementOpen] = useState(false);
-  const [startConfirmOpen, setStartConfirmOpen] = useState(false);
   const [applyOpen, setApplyOpen] = useState(false);
   const [historyRun, setHistoryRun] = useState<
     NonNullable<Task["runs"]>[number] | null
@@ -124,9 +122,7 @@ export default function RunView({
   const logRef = useRef<HTMLDivElement>(null);
   const running = activeStatuses.includes(task.status);
   const bugAnalysis =
-    task.kind === "bug" &&
-    task.intent?.mode === "diagnose" &&
-    !task.snapshot;
+    task.kind === "bug" && task.intent?.mode === "diagnose" && !task.snapshot;
   const analysisReady = bugAnalysis && Boolean(task.diagnosis);
   const analysisRunning = bugAnalysis && !task.diagnosis;
   const developmentPending = developmentValidationPending(task.failure?.code);
@@ -167,8 +163,23 @@ export default function RunView({
     }
   }
   async function confirmStart() {
-    setStartConfirmOpen(false);
-    await action("start");
+    if (!api) return;
+    setBusy(true);
+    try {
+      const updated = await api.taskAction(task.id, "start");
+      onTask(updated);
+      if (updated.runtime?.reusedExisting)
+        report(
+          `${I18nT(
+            "项目已经启动，已在常用浏览器打开",
+            "The project is already running and was opened in your usual browser",
+          )} ${updated.runtime.targetUrl}`,
+        );
+    } catch (error) {
+      report((error as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
   }
   async function applyToProject() {
     if (!api?.applyWorkspace) return;
@@ -360,7 +371,9 @@ export default function RunView({
               <div>
                 <strong>{I18nT("涉及文件", "Affected files")}</strong>
                 {task.diagnosis.affectedFiles.map((file) => (
-                  <p className="mono" key={file}>{file}</p>
+                  <p className="mono" key={file}>
+                    {file}
+                  </p>
                 ))}
               </div>
             )}
@@ -369,21 +382,44 @@ export default function RunView({
               <p className="prewrap">{task.diagnosis.recommendation}</p>
             </div>
             <div className="diagnosis-traceability">
-              <strong>{I18nT("Bug 引入记录", "Bug introduction record")}</strong>
+              <strong>
+                {I18nT("Bug 引入记录", "Bug introduction record")}
+              </strong>
               <p>
-                {I18nT("引入时间", "Introduced at")}: {task.diagnosis.introducedAt || I18nT("无法确认", "Unconfirmed")}
+                {I18nT("引入时间", "Introduced at")}:{" "}
+                {task.diagnosis.introducedAt ||
+                  I18nT("无法确认", "Unconfirmed")}
               </p>
               {task.diagnosis.introducingCommit ? (
                 <>
-                  <p className="mono">Commit: {task.diagnosis.introducingCommit.hash}</p>
-                  <p>{I18nT("作者", "Author")}: {task.diagnosis.introducingCommit.author}</p>
-                  <p>{I18nT("提交时间", "Committed at")}: {task.diagnosis.introducingCommit.committedAt}</p>
-                  <p>{I18nT("提交说明", "Commit message")}: {task.diagnosis.introducingCommit.message}</p>
+                  <p className="mono">
+                    Commit: {task.diagnosis.introducingCommit.hash}
+                  </p>
+                  <p>
+                    {I18nT("作者", "Author")}:{" "}
+                    {task.diagnosis.introducingCommit.author}
+                  </p>
+                  <p>
+                    {I18nT("提交时间", "Committed at")}:{" "}
+                    {task.diagnosis.introducingCommit.committedAt}
+                  </p>
+                  <p>
+                    {I18nT("提交说明", "Commit message")}:{" "}
+                    {task.diagnosis.introducingCommit.message}
+                  </p>
                 </>
               ) : (
-                <p>{I18nT("引入提交：无法确认", "Introducing commit: unconfirmed")}</p>
+                <p>
+                  {I18nT(
+                    "引入提交：无法确认",
+                    "Introducing commit: unconfirmed",
+                  )}
+                </p>
               )}
-              <p>{I18nT("对应版本", "Version")}: {task.diagnosis.versionInfo || I18nT("无法确认", "Unconfirmed")}</p>
+              <p>
+                {I18nT("对应版本", "Version")}:{" "}
+                {task.diagnosis.versionInfo || I18nT("无法确认", "Unconfirmed")}
+              </p>
               {task.diagnosis.traceabilityNotes && (
                 <p className="prewrap">{task.diagnosis.traceabilityNotes}</p>
               )}
@@ -391,10 +427,7 @@ export default function RunView({
           </div>
           {task.kind === "bug" && task.status === "ready" && (
             <div className="actions">
-              <button
-                disabled={busy}
-                onClick={() => setSupplementOpen(true)}
-              >
+              <button disabled={busy} onClick={() => setSupplementOpen(true)}>
                 <MessageSquarePlus size={16} />
                 {I18nT("补充", "Add details")}
               </button>
@@ -599,19 +632,20 @@ export default function RunView({
                         "No code changes were produced; retry implementation",
                       )
                     : incomplete
-                    ? developmentPending
-                      ? I18nT(
-                          "代码已修改，检查待处理",
-                          "Code changed; checks need attention",
-                        )
-                      : I18nT("验证未完成", "Validation incomplete")
-                    : statusLabel(task.status)}
+                      ? developmentPending
+                        ? I18nT(
+                            "代码已修改，检查待处理",
+                            "Code changed; checks need attention",
+                          )
+                        : I18nT("验证未完成", "Validation incomplete")
+                      : statusLabel(task.status)}
                   {task.status === "developing" && task.activity && (
                     <span className="activity-seconds">
                       {Math.max(
                         0,
                         Math.floor(
-                          (activityNow - Date.parse(task.activity.lastOutputAt)) /
+                          (activityNow -
+                            Date.parse(task.activity.lastOutputAt)) /
                             1000,
                         ),
                       )}
@@ -859,7 +893,26 @@ export default function RunView({
                 >
                   <time>{new Date(entry.time).toLocaleTimeString()}</time>
                   <span className="log-stage">[{entry.stage}]</span>
-                  <span>{entry.message}</span>
+                  <span>
+                    {task.runtime?.targetUrl &&
+                    entry.message.includes(task.runtime.targetUrl) ? (
+                      <>
+                        {entry.message.replace(task.runtime.targetUrl, "")}
+                        <button
+                          className="text-button"
+                          onClick={() =>
+                            void api
+                              ?.openTarget(task.id, true)
+                              .catch((error) => report(error.message, true))
+                          }
+                        >
+                          {task.runtime.targetUrl}
+                        </button>
+                      </>
+                    ) : (
+                      entry.message
+                    )}
+                  </span>
                 </div>
               ))
             ) : (
@@ -1125,10 +1178,10 @@ export default function RunView({
                   <button
                     className="primary"
                     disabled={busy}
-                    onClick={() => setStartConfirmOpen(true)}
+                    onClick={() => void confirmStart()}
                   >
                     <Play size={15} />
-                    {I18nT("启动项目进入验证", "Start project for review")}
+                    {I18nT("启动或打开验证", "Start or open for review")}
                   </button>
                 )}
               {(automated || task.workspace) &&
@@ -1221,35 +1274,6 @@ export default function RunView({
             </button>
           )}
         </div>
-        {startConfirmOpen && (
-          <Modal
-            title={I18nT("启动项目进入验证？", "Start the project for review?")}
-            close={() => setStartConfirmOpen(false)}
-          >
-            <p>
-              {I18nT(
-                "Studio 将运行该项目配置的启动命令并打开开发页面。如果项目已经由你启动，可以暂不启动并直接在现有页面中验证。",
-                "Studio will run the configured start command and open the development page. If the project is already running, skip this and review it in the existing page.",
-              )}
-            </p>
-            <div className="modal-actions">
-              <button
-                disabled={busy}
-                onClick={() => setStartConfirmOpen(false)}
-              >
-                {I18nT("暂不启动", "Not now")}
-              </button>
-              <button
-                className="primary"
-                disabled={busy}
-                onClick={() => void confirmStart()}
-              >
-                <Play size={15} />
-                {I18nT("确定并启动", "Start now")}
-              </button>
-            </div>
-          </Modal>
-        )}
       </div>
       {supplementOpen && api && (
         <SupplementDialog
@@ -1271,19 +1295,30 @@ export default function RunView({
           close={() => setHistoryRun(null)}
         >
           <p className="muted">
-            {I18nT("执行阶段", "Stage")}: {stages.find((stage) => stage.key === historyRun.stage)?.label || historyRun.stage}
+            {I18nT("执行阶段", "Stage")}:{" "}
+            {stages.find((stage) => stage.key === historyRun.stage)?.label ||
+              historyRun.stage}
             <br />
-            {I18nT("开始时间", "Started")}: {new Date(historyRun.startedAt).toLocaleString()}
+            {I18nT("开始时间", "Started")}:{" "}
+            {new Date(historyRun.startedAt).toLocaleString()}
             <br />
-            {I18nT("结束时间", "Finished")}: {historyRun.finishedAt ? new Date(historyRun.finishedAt).toLocaleString() : I18nT("尚未结束", "Not finished")}
+            {I18nT("结束时间", "Finished")}:{" "}
+            {historyRun.finishedAt
+              ? new Date(historyRun.finishedAt).toLocaleString()
+              : I18nT("尚未结束", "Not finished")}
           </p>
           {historyRun.error && <Notice tone="error">{historyRun.error}</Notice>}
           {historyRun.checks.map((check, index) => (
-            <section className="history-drawer-check" key={`${check.name}-${index}`}>
+            <section
+              className="history-drawer-check"
+              key={`${check.name}-${index}`}
+            >
               <div className="history-run-summary">
                 <span className={`result-dot ${check.state}`} />
                 <strong>{check.name}</strong>
-                <span className={`badge ${check.state === "passed" ? "success" : check.state === "failed" ? "danger" : "warning"}`}>
+                <span
+                  className={`badge ${check.state === "passed" ? "success" : check.state === "failed" ? "danger" : "warning"}`}
+                >
                   {check.state === "passed"
                     ? I18nT("通过", "Passed")
                     : check.state === "failed"
@@ -1321,7 +1356,9 @@ export default function RunView({
               <div>
                 <strong>{I18nT("涉及文件", "Affected files")}</strong>
                 {task.diagnosis.affectedFiles.map((file) => (
-                  <p className="mono" key={file}>{file}</p>
+                  <p className="mono" key={file}>
+                    {file}
+                  </p>
                 ))}
               </div>
             )}
@@ -1330,19 +1367,44 @@ export default function RunView({
               <p className="prewrap">{task.diagnosis.recommendation}</p>
             </div>
             <div className="diagnosis-traceability">
-              <strong>{I18nT("Bug 引入记录", "Bug introduction record")}</strong>
-              <p>{I18nT("引入时间", "Introduced at")}: {task.diagnosis.introducedAt || I18nT("无法确认", "Unconfirmed")}</p>
+              <strong>
+                {I18nT("Bug 引入记录", "Bug introduction record")}
+              </strong>
+              <p>
+                {I18nT("引入时间", "Introduced at")}:{" "}
+                {task.diagnosis.introducedAt ||
+                  I18nT("无法确认", "Unconfirmed")}
+              </p>
               {task.diagnosis.introducingCommit ? (
                 <>
-                  <p className="mono">Commit: {task.diagnosis.introducingCommit.hash}</p>
-                  <p>{I18nT("作者", "Author")}: {task.diagnosis.introducingCommit.author}</p>
-                  <p>{I18nT("提交时间", "Committed at")}: {task.diagnosis.introducingCommit.committedAt}</p>
-                  <p>{I18nT("提交说明", "Commit message")}: {task.diagnosis.introducingCommit.message}</p>
+                  <p className="mono">
+                    Commit: {task.diagnosis.introducingCommit.hash}
+                  </p>
+                  <p>
+                    {I18nT("作者", "Author")}:{" "}
+                    {task.diagnosis.introducingCommit.author}
+                  </p>
+                  <p>
+                    {I18nT("提交时间", "Committed at")}:{" "}
+                    {task.diagnosis.introducingCommit.committedAt}
+                  </p>
+                  <p>
+                    {I18nT("提交说明", "Commit message")}:{" "}
+                    {task.diagnosis.introducingCommit.message}
+                  </p>
                 </>
               ) : (
-                <p>{I18nT("引入提交：无法确认", "Introducing commit: unconfirmed")}</p>
+                <p>
+                  {I18nT(
+                    "引入提交：无法确认",
+                    "Introducing commit: unconfirmed",
+                  )}
+                </p>
               )}
-              <p>{I18nT("对应版本", "Version")}: {task.diagnosis.versionInfo || I18nT("无法确认", "Unconfirmed")}</p>
+              <p>
+                {I18nT("对应版本", "Version")}:{" "}
+                {task.diagnosis.versionInfo || I18nT("无法确认", "Unconfirmed")}
+              </p>
               {task.diagnosis.traceabilityNotes && (
                 <p className="prewrap">{task.diagnosis.traceabilityNotes}</p>
               )}

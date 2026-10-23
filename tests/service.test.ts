@@ -156,7 +156,9 @@ test("an explicit diagnosis request performs a read-only Codex investigation", a
   expect(fs.realpathSync(calls()[0].cwd)).toBe(fs.realpathSync(repository));
   expect(calls()[0].args).toContain("read-only");
   expect(calls()[0].prompt).toContain("DIAGNOSIS ONLY");
-  expect(calls()[0].prompt).not.toContain("Read applicable AGENTS.md and the Tyflow workflow");
+  expect(calls()[0].prompt).not.toContain(
+    "Read applicable AGENTS.md and the Tyflow workflow",
+  );
 });
 
 test("explicit isolated-task application makes checked code visible in original checkout without accepting or pushing", async () => {
@@ -214,7 +216,7 @@ test("isolated task source modified after development checks cannot be applied u
   expect(service.busy).toBe(false);
 }, 60000);
 
-test("quick text modification uses the live checkout with one Agent call and no test/browser ceremony", async () => {
+test("small text work is classified and reviewed before focused live-checkout development", async () => {
   const task = create({
     kind: "text",
     size: "small",
@@ -226,7 +228,17 @@ test("quick text modification uses the live checkout with one Agent call and no 
   configure({
     developmentFiles: { "verify.cjs": "console.log('quick copy updated')" },
   });
-  await service.action(task.id, "fix");
+  await expect(service.action(task.id, "fix")).rejects.toThrow(
+    /先完成分级、开发计划和测试用例评估/,
+  );
+  await service.action(task.id, "analyze");
+  const assessed = await status(task.id, "ready");
+  expect(assessed.plan?.deliveryLevel).toBe("L1");
+  expect(assessed.plan?.steps.length).toBeGreaterThan(0);
+  expect(assessed.plan?.testCases.length).toBeGreaterThan(0);
+  expect(assessed.workflowMode).toBe("quick");
+  expect(assessed.autoTest).toBe(false);
+  await service.action(task.id, "develop");
   const finished = await status(task.id, "waiting-review");
   expect(finished.workspace).toBeUndefined();
   expect(finished.snapshot?.project.directory).toBe(repository);
@@ -234,20 +246,21 @@ test("quick text modification uses the live checkout with one Agent call and no 
   expect(
     fs.readFileSync(path.join(repository, "verify.cjs"), "utf8"),
   ).toContain("quick copy updated");
-  expect(calls().map((call) => call.stage)).toEqual(["development"]);
-  expect(calls()[0].prompt).toContain("L1");
-  expect(calls()[0].prompt).not.toContain(
+  expect(calls().map((call) => call.stage)).toEqual([
+    "analysis",
+    "development",
+  ]);
+  expect(calls()[0].prompt).toContain("Every level MUST return");
+  expect(calls()[1].prompt).toContain("L1");
+  expect(calls()[1].prompt).not.toContain(
     "Read applicable AGENTS.md and the Tyflow workflow",
   );
-  expect(calls()[0].prompt).not.toContain(
+  expect(calls()[1].prompt).not.toContain(
     "Studio will invoke the configured professional test provider",
   );
   expect(
     finished.checkpoints?.some(
-      (c) =>
-        c.id === "development:dependencies" ||
-        c.id.startsWith("analysis:") ||
-        c.id.startsWith("test:"),
+      (c) => c.id === "development:dependencies" || c.id.startsWith("test:"),
     ),
   ).toBe(false);
   expect(
@@ -1460,7 +1473,7 @@ test("successful case evidence and actual HTTP readiness precede opening the pre
   expect(new Store(store.directory).getTask(task.id).status).toBe("accepted");
 });
 
-test("a second task replaces the service-owned server for the same project and URL", async () => {
+test("a second task reuses an already running project instead of restarting it", async () => {
   const url = await installServerFixture();
   const settings = store.settings();
   settings.projects[0].targetUrl = url;
@@ -1488,18 +1501,17 @@ test("a second task replaces the service-owned server for the same project and U
   await service.action(second.id, "start");
   const reviewed = await status(second.id, "review");
   const secondServer = (await (await fetch(url)).json()) as { pid: number };
-  expect(secondServer.pid).not.toBe(firstServer.pid);
-  expect(reviewed.logs.some((log) => log.message.includes("此前启动"))).toBe(
+  expect(secondServer.pid).toBe(firstServer.pid);
+  expect(reviewed.logs.some((log) => log.message.includes("已经启动"))).toBe(
     true,
   );
+  expect(reviewed.runtime?.reusedExisting).toBe(true);
   expect(opened).toEqual([url, url]);
   expect(reviewed.runtime?.targetUrl).toBe(url);
-  await expect(service.openTarget(first.id, true)).rejects.toThrow(
-    "另一个任务",
-  );
+  await expect(service.openTarget(first.id, true)).resolves.toBeUndefined();
 });
 
-test("an unrelated HTTP responder blocks startup without killing it or opening the wrong page", async () => {
+test("an existing responder is treated as the user's already running project", async () => {
   const external = http.createServer((_request, response) =>
     response.end("unrelated fixture responder"),
   );
@@ -1518,12 +1530,14 @@ test("an unrelated HTTP responder blocks startup without killing it or opening t
     await service.action(task.id, "test");
     await status(task.id, "waiting-review");
     await service.action(task.id, "start");
-    const failed = await status(task.id, "failed");
-    expect(failed.stage).toBe("startup");
-    expect(failed.error).toContain("目标地址已有服务响应");
+    const reviewed = await status(task.id, "review");
+    expect(reviewed.runtime?.reusedExisting).toBe(true);
+    expect(reviewed.logs.some((log) => log.message.includes("已经启动"))).toBe(
+      true,
+    );
     expect(await (await fetch(url)).text()).toBe("unrelated fixture responder");
     expect(external.listening).toBe(true);
-    expect(opened).toEqual([]);
+    expect(opened).toEqual([url]);
   } finally {
     external.closeAllConnections();
     await new Promise<void>((resolve, reject) =>
@@ -1532,7 +1546,7 @@ test("an unrelated HTTP responder blocks startup without killing it or opening t
   }
 });
 
-test("startup retry adopts corrected runtime settings while preserving the frozen checkout and last successful open URL", async () => {
+test("startup automatically falls back to an available conventional npm script", async () => {
   const url = await installServerFixture();
   const settings = store.settings();
   settings.projects[0].startScript = "start:missing";
@@ -1540,32 +1554,22 @@ test("startup retry adopts corrected runtime settings while preserving the froze
   const task = await developed();
   await service.action(task.id, "test");
   await status(task.id, "waiting-review");
+  settings.projects[0].targetUrl = url;
+  service.saveSettings(settings);
   await service.action(task.id, "start");
-  const failed = await status(task.id, "failed");
-  expect(failed.stage).toBe("startup");
-  expect(failed.error).toContain("start:missing");
-  const corrected = store.settings();
-  corrected.projects[0].startScript = "start:corrected";
-  corrected.projects[0].targetUrl = url;
-  corrected.projects[0].directory = path.join(
-    root,
-    "different-nonexistent-checkout",
-  );
-  service.saveSettings(corrected);
-  await service.action(task.id, "retry");
   const reviewed = await status(task.id, "review");
-  expect(reviewed.snapshot).toEqual(failed.snapshot);
   expect(reviewed.snapshot?.project.directory).toBe(repository);
   expect(reviewed.runtime).toEqual({
-    startScript: "start:corrected",
+    startScript: "start:dev",
     targetUrl: url,
+    reusedExisting: false,
   });
+  expect(
+    reviewed.logs.some((log) =>
+      log.message.includes("自动使用 npm run start:dev"),
+    ),
+  ).toBe(true);
   expect(opened).toEqual([url]);
-  const afterSuccess = store.settings();
-  afterSuccess.projects[0].targetUrl = "http://127.0.0.1:49998/different-page";
-  service.saveSettings(afterSuccess);
-  await service.openTarget(task.id);
-  expect(opened).toEqual([url, url]);
   expect(new Store(store.directory).getTask(task.id).runtime).toEqual(
     reviewed.runtime,
   );
