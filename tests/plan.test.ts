@@ -131,6 +131,25 @@ test("transport and cancellation failures are not automatically replayed", async
   ).rejects.toMatchObject({ code: "CANCELLED" });
   expect(aborted).toHaveBeenCalledTimes(1);
 });
+test("only an explicit network failure recommends checking the network", () => {
+  const generic = failureDetail(
+    new ProviderFailure("agent", "AGENT_EVENT_FAILED", "controlled failure"),
+    "development",
+    "development:agent",
+    "agent",
+    (value) => value,
+  );
+  expect(generic.recommendedActions.join(";")).not.toContain("网络");
+  expect(generic.recommendedActions.join(";")).toContain("最终错误");
+  const network = failureDetail(
+    new ProviderFailure("agent", "NETWORK_LOST", "controlled disconnect"),
+    "development",
+    "development:agent",
+    "agent",
+    (value) => value,
+  );
+  expect(network.recommendedActions.join(";")).toContain("网络");
+});
 test("an already-cancelled task never invokes the Agent", async () => {
   const controller = new AbortController();
   controller.abort();
