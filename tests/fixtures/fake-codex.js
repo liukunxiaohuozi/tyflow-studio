@@ -115,9 +115,15 @@ process.stdin.on("end", () => {
       const results = {
         analysis: {
           summary: "Fixture assessment",
-          deliveryLevel: prompt.includes('"mode":"existing"') ? "L1" : "L2",
+          deliveryLevel: prompt.includes(
+            '"mode":"existing","base":"main","name":"main"',
+          )
+            ? "L1"
+            : "L2",
           orchestration: {
-            useTyflow: !prompt.includes('"mode":"existing"'),
+            useTyflow: !prompt.includes(
+              '"mode":"existing","base":"main","name":"main"',
+            ),
             useAutomatedTests: false,
             verificationScope: "Run focused requirement and regression checks",
             reason: "Fixture-selected delivery scope",

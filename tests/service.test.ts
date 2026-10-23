@@ -272,6 +272,7 @@ test("small text work is classified and reviewed before focused live-checkout de
 
 test("optional quick testing verifies only pending cases without full commands or workflow reload", async () => {
   const task = create({
+    kind: "bug",
     workflowMode: "quick",
     workspaceMode: "current",
     branch: { mode: "existing", base: "main", name: "main", version: "" },
@@ -326,6 +327,7 @@ test("unchecked automated testing finishes text development for manual browser r
 test("quick mode refuses another branch and preserves dirty work until explicitly confirmed", async () => {
   git("branch", "other");
   const changedBranch = create({
+    kind: "bug",
     workflowMode: "quick",
     workspaceMode: "current",
     branch: { mode: "existing", base: "other", name: "other", version: "" },
@@ -338,6 +340,7 @@ test("quick mode refuses another branch and preserves dirty work until explicitl
   expect(calls()).toHaveLength(0);
   fs.writeFileSync(path.join(repository, "user-note.txt"), "User work remains");
   const dirtyTask = create({
+    kind: "bug",
     workflowMode: "quick",
     workspaceMode: "current",
     branch: { mode: "existing", base: "main", name: "main", version: "" },
@@ -356,6 +359,7 @@ test("quick mode refuses another branch and preserves dirty work until explicitl
 
 test("quick source guard blocks new package edits without erasing the generated or existing code", async () => {
   const task = create({
+    kind: "bug",
     workflowMode: "quick",
     workspaceMode: "current",
     branch: { mode: "existing", base: "main", name: "main", version: "" },

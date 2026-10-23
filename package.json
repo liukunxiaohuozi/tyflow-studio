@@ -1,7 +1,7 @@
 {
   "name": "tyflow-studio",
   "productName": "TingYun Studio",
-  "version": "0.3.29",
+  "version": "0.3.30",
   "description": "OpenDesign to development desktop workspace",
   "author": "TingYun Studio",
   "private": true,
@@ -61,7 +61,9 @@
       "package.json"
     ],
     "asar": true,
-    "asarUnpack": ["node_modules/playwright-core/**/*"],
+    "asarUnpack": [
+      "node_modules/playwright-core/**/*"
+    ],
     "win": {
       "target": "nsis",
       "artifactName": "TingYun-Studio-${version}-Windows-${arch}.${ext}"
