@@ -35,6 +35,7 @@ import SupplementDialog from "./SupplementDialog";
 import { validationPending } from "../shared/browser-test";
 import {
   developmentValidationPending,
+  developmentProducedNoChanges,
   canRecheckDevelopment,
 } from "../shared/development-checks";
 const BrowserTestDrawer = lazy(() => import("./BrowserTestDrawer"));
@@ -129,6 +130,7 @@ export default function RunView({
   const analysisReady = bugAnalysis && Boolean(task.diagnosis);
   const analysisRunning = bugAnalysis && !task.diagnosis;
   const developmentPending = developmentValidationPending(task.failure?.code);
+  const noDevelopmentChanges = developmentProducedNoChanges(task);
   const incomplete =
     developmentPending || validationPending(task.failure?.code);
   const tone = incomplete ? "warning" : toneOf(task.status);
@@ -294,10 +296,17 @@ export default function RunView({
                       )}
           </p>
         </div>
-        {incomplete ? (
+        {noDevelopmentChanges ? (
+          <span className="badge error">
+            {I18nT("未产生代码修改", "No code changes produced")}
+          </span>
+        ) : incomplete ? (
           <span className="badge warning">
             {developmentPending
-              ? I18nT("开发验证未完成", "Development validation incomplete")
+              ? I18nT(
+                  "代码已修改，检查待处理",
+                  "Code changed; checks need attention",
+                )
               : I18nT("验证未完成", "Validation incomplete")}
           </span>
         ) : (
@@ -584,11 +593,16 @@ export default function RunView({
               </div>
               <div>
                 <h2>
-                  {incomplete
+                  {noDevelopmentChanges
+                    ? I18nT(
+                        "未产生代码修改，需重新修复",
+                        "No code changes were produced; retry implementation",
+                      )
+                    : incomplete
                     ? developmentPending
                       ? I18nT(
-                          "开发验证未完成",
-                          "Development validation incomplete",
+                          "代码已修改，检查待处理",
+                          "Code changed; checks need attention",
                         )
                       : I18nT("验证未完成", "Validation incomplete")
                     : statusLabel(task.status)}

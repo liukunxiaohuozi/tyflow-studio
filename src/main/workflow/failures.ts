@@ -47,7 +47,12 @@ export function failureDetail(
       "已完成检查点会按基线与证据有效性决定是否复用",
     ],
     recommendedActions:
-      typed?.code === "DEVELOPMENT_VALIDATION_INCOMPLETE" ||
+      typed?.code === "DEVELOPMENT_NO_CHANGES"
+        ? [
+            "本轮未产生代码修改，无需检查本地更改区或重复执行开发检查",
+            "点击“重新修复”重新执行实现；也可先补充文件线索或约束后重试",
+          ]
+        : typed?.code === "DEVELOPMENT_VALIDATION_INCOMPLETE" ||
       typed?.code === "DEVELOPMENT_CHECK_FAILED"
         ? [
             "查看具体检查项：已保存代码不等于开发检查已通过；历史质量问题须有同环境基线证据，不能直接忽略",

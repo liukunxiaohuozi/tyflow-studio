@@ -2219,8 +2219,13 @@ test("reported implementation failures are code failures, not Agent transport fa
   const failed = await status(t.id, "failed");
   expect(failed.failure).toMatchObject({
     category: "code",
-    code: "DEVELOPMENT_CHECK_FAILED",
+    code: "DEVELOPMENT_NO_CHANGES",
   });
+  expect(failed.failure?.message).toContain("未成功写入任何项目文件");
+  expect(failed.failure?.recommendedActions.join("；")).toContain("重新修复");
+  expect(failed.failure?.recommendedActions.join("；")).not.toContain(
+    "重新执行开发检查",
+  );
 });
 
 test("missing regression evidence remains incomplete and can recover with checks-only without reimplementation", async () => {
@@ -2289,6 +2294,9 @@ test("missing regression evidence remains incomplete and can recover with checks
 test("checks-only mutation is blocked and preserved rather than silently accepted or reverted", async () => {
   const task = await ready();
   configure({
+    developmentFiles: {
+      "verify.cjs": "console.log('saved implementation')",
+    },
     result: {
       summary: "failed check",
       checks: [

@@ -1915,19 +1915,20 @@ export class StudioService {
           task.snapshot!.project.directory,
           task.snapshot!.baseCommit,
         );
+        const implementationFiles = changedFiles.filter(
+          (file) =>
+            !isTestArtifact(
+              task.snapshot!.project.directory,
+              file.path,
+              file.changeType,
+            ),
+        );
         report.checks = await reconcileHistoricalLint({
           task,
           checks: report.checks,
-          changedFiles: changedFiles
-            .filter(
-              (f) =>
-                !isTestArtifact(
-                  task.snapshot!.project.directory,
-                  f.path,
-                  f.changeType,
-                ),
-            )
-            .map((f) => f.path.replace(/\\/g, "/")),
+          changedFiles: implementationFiles.map((file) =>
+            file.path.replace(/\\/g, "/"),
+          ),
           identityBefore: qualityIdentity,
           evidence: this.evidence,
           signal,
@@ -1941,6 +1942,15 @@ export class StudioService {
         );
         if (developmentResult.outcome !== "completed") {
           this.publish(task);
+          if (!checksOnly && implementationFiles.length === 0)
+            throw new ProviderFailure(
+              "code",
+              "DEVELOPMENT_NO_CHANGES",
+              `本轮修复未成功写入任何项目文件：${[
+                ...developmentResult.failures,
+                ...developmentResult.pending,
+              ].join("、")}。本地项目没有待审查的代码改动，请重新修复。`,
+            );
           throw new ProviderFailure(
             "code",
             developmentResult.outcome === "failed"
