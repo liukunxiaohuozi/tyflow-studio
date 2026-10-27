@@ -42,9 +42,10 @@ const CONVENTIONAL_COMMIT =
 function commitSubject(message: string) {
   const sanitized = message.replace(/[\r\n\0]+/g, " ").trim();
   if (!sanitized) throw new Error("提交说明不能为空");
-  return (CONVENTIONAL_COMMIT.test(sanitized)
-    ? sanitized
-    : `chore(studio): ${sanitized}`
+  return (
+    CONVENTIONAL_COMMIT.test(sanitized)
+      ? sanitized
+      : `chore(studio): ${sanitized}`
   ).slice(0, 200);
 }
 
@@ -658,6 +659,7 @@ export async function commitAndPush(
     remote: string;
   }) => void,
   runtimeEnv: NodeJS.ProcessEnv = {},
+  includePaths?: string[],
 ): Promise<{ commit: string; branch: string; remote: string }> {
   safeReference(branch);
   const subject = commitSubject(message);
@@ -672,19 +674,73 @@ export async function commitAndPush(
           `当前分支为 ${info.branch || "分离 HEAD"}，不是本次开发分支 ${branch}`,
         );
       let commit = existingCommit;
+      const selectedPaths = includePaths
+        ? [...new Set(includePaths.map((file) => file.replace(/\\/g, "/")))]
+        : undefined;
+      if (
+        selectedPaths?.some(
+          (file) =>
+            !file ||
+            isAbsolute(file) ||
+            file === ".." ||
+            file.startsWith("../") ||
+            file.includes("/../") ||
+            /[\r\n\0]/.test(file),
+        )
+      )
+        throw new Error("本次任务的提交文件范围无效，请重新执行差异检查");
       if (commit) {
         if (
           info.commit !== commit ||
           (info.dirty &&
             (await changedFilesSince(cwd, info.commit)).some(
-              (file) => !isTestArtifact(cwd, file.path, file.changeType),
+              (file) =>
+                !isTestArtifact(cwd, file.path, file.changeType) &&
+                (!selectedPaths ||
+                  selectedPaths.includes(file.path.replace(/\\/g, "/"))),
             ))
         )
           throw new Error("本地提交后工作区又发生变化，请先核对改动再重试推送");
       } else {
         if (!info.dirty) throw new Error("本次开发没有可提交的代码修改");
         const changes = await changedFilesSince(cwd, info.commit);
-        if (
+        const selectedChanges = selectedPaths
+          ? changes.filter((file) =>
+              selectedPaths.includes(file.path.replace(/\\/g, "/")),
+            )
+          : changes;
+        if (!selectedChanges.length)
+          throw new Error("本次开发没有可提交的代码修改");
+        if (selectedPaths) {
+          const pathspecs = selectedPaths.map((file) => `:(literal)${file}`);
+          const untracked = selectedChanges
+            .filter((file) => file.changeType === "untracked")
+            .map((file) => `:(literal)${file.path}`);
+          if (untracked.length)
+            await run(cwd, ["add", "--intent-to-add", "--", ...untracked]);
+          const identity = [
+            ...(developer.name.trim()
+              ? ["-c", `user.name=${developer.name.trim()}`]
+              : []),
+            ...(developer.email.trim()
+              ? ["-c", `user.email=${developer.email.trim()}`]
+              : []),
+          ];
+          await run(
+            cwd,
+            [
+              ...identity,
+              "commit",
+              "--only",
+              "-m",
+              subject,
+              "--",
+              ...pathspecs,
+            ],
+            executionEnv,
+            120000,
+          );
+        } else if (
           changes.some((file) =>
             isTestArtifact(cwd, file.path, file.changeType),
           )
@@ -709,22 +765,24 @@ export async function commitAndPush(
         } else {
           await run(cwd, ["add", "--all"]);
         }
-        const staged = await run(cwd, ["diff", "--cached", "--name-only"]);
-        if (!staged.trim()) throw new Error("本次开发没有可提交的代码修改");
-        const identity = [
-          ...(developer.name.trim()
-            ? ["-c", `user.name=${developer.name.trim()}`]
-            : []),
-          ...(developer.email.trim()
-            ? ["-c", `user.email=${developer.email.trim()}`]
-            : []),
-        ];
-        await run(
-          cwd,
-          [...identity, "commit", "-m", subject],
-          executionEnv,
-          120000,
-        );
+        if (!selectedPaths) {
+          const staged = await run(cwd, ["diff", "--cached", "--name-only"]);
+          if (!staged.trim()) throw new Error("本次开发没有可提交的代码修改");
+          const identity = [
+            ...(developer.name.trim()
+              ? ["-c", `user.name=${developer.name.trim()}`]
+              : []),
+            ...(developer.email.trim()
+              ? ["-c", `user.email=${developer.email.trim()}`]
+              : []),
+          ];
+          await run(
+            cwd,
+            [...identity, "commit", "-m", subject],
+            executionEnv,
+            120000,
+          );
+        }
         info = await inspectRepository(cwd);
         commit = info.commit;
       }

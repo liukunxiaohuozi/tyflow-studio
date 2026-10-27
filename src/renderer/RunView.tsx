@@ -481,6 +481,19 @@ export default function RunView({
       {task.error && !task.failure && (
         <Notice tone="error">{task.error}</Notice>
       )}
+      {Boolean(task.workspaceOverlap?.length) && (
+        <Notice>
+          <strong>
+            {I18nT("请校验代码改动", "Review overlapping changes")}
+          </strong>
+          <br />
+          {I18nT(
+            "任务开始前已有未提交修改，本次又修改了相同文件。开发与验收可以继续，但 Studio 不会自动提交这些无法安全拆分的文件：",
+            "These files already had uncommitted changes and were changed again by this task. Development and review can continue, but Studio will not auto-commit changes that cannot be separated safely:",
+          )}{" "}
+          {task.workspaceOverlap!.join(", ")}
+        </Notice>
+      )}
       {(task.status === "waiting-review" ||
         (!task.autoTest && task.status === "waiting-test")) && (
         <Notice>

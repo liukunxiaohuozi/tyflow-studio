@@ -324,7 +324,7 @@ test("unchecked automated testing finishes text development for manual browser r
   expect(finished.logs.at(-1)?.message).toContain("浏览器");
 });
 
-test("quick mode refuses another branch and preserves dirty work until explicitly confirmed", async () => {
+test("quick mode refuses another branch but continues on the current branch without touching prior dirty work", async () => {
   git("branch", "other");
   const changedBranch = create({
     kind: "bug",
@@ -347,14 +347,126 @@ test("quick mode refuses another branch and preserves dirty work until explicitl
   });
   configure({ developmentFiles: { "verify.cjs": "console.log('small fix')" } });
   await service.action(dirtyTask.id, "fix");
-  await status(dirtyTask.id, "failed");
-  expect(calls()).toHaveLength(0);
-  await service.action(dirtyTask.id, "retry", { allowDirty: true });
-  await status(dirtyTask.id, "waiting-review");
+  const finished = await status(dirtyTask.id, "waiting-review");
   expect(fs.readFileSync(path.join(repository, "user-note.txt"), "utf8")).toBe(
     "User work remains",
   );
+  expect(finished.workspaceOverlap).toEqual([]);
+  expect(finished.gateReviews?.diff?.files.map((file) => file.path)).toEqual([
+    "verify.cjs",
+  ]);
+  expect(
+    finished.logs.some((entry) => entry.message.includes("已有未提交修改")),
+  ).toBe(true);
   expect(calls().map((call) => call.stage)).toEqual(["development"]);
+});
+
+test("a file changed before and during the task is reported for review without blocking development", async () => {
+  fs.appendFileSync(path.join(repository, "verify.cjs"), "\n// previous task");
+  const task = create({
+    kind: "bug",
+    workflowMode: "quick",
+    workspaceMode: "current",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+  });
+  configure({
+    developmentFiles: {
+      "verify.cjs": "console.log('current task')\n// previous task preserved",
+    },
+  });
+
+  await service.action(task.id, "fix");
+  const finished = await status(task.id, "waiting-review");
+
+  expect(finished.workspaceOverlap).toEqual(["verify.cjs"]);
+  expect(
+    finished.logs.some(
+      (entry) =>
+        entry.message.includes("请校验代码改动") &&
+        entry.message.includes("verify.cjs"),
+    ),
+  ).toBe(true);
+  expect(calls()[0].prompt).toContain("verify.cjs");
+  expect(calls()[0].prompt).toContain("Preserve it");
+});
+
+test("acceptance commits only files changed by this task and leaves earlier local work uncommitted", async () => {
+  fs.writeFileSync(path.join(repository, "local-proxy.cjs"), "base proxy");
+  git("add", "local-proxy.cjs");
+  git("commit", "-m", "add local proxy fixture");
+  fs.writeFileSync(path.join(repository, "local-proxy.cjs"), "developer proxy");
+  const remote = path.join(root, "selective-delivery.git");
+  execFileSync("git", ["init", "--bare", remote], { windowsHide: true });
+  git("remote", "add", "origin", remote);
+  const task = create({
+    kind: "bug",
+    workflowMode: "quick",
+    workspaceMode: "current",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+  });
+  configure({
+    developmentFiles: {
+      "verify.cjs": "console.log('task-only change')",
+      "task-only.cjs": "console.log('new task file')",
+    },
+  });
+  await service.action(task.id, "fix");
+  await status(task.id, "waiting-review");
+
+  const accepted = await service.action(task.id, "accept");
+
+  expect(accepted.status).toBe("accepted");
+  expect(
+    execFileSync(
+      "git",
+      ["show", `${accepted.delivery!.commit}:local-proxy.cjs`],
+      { cwd: repository, encoding: "utf8", windowsHide: true },
+    ).trim(),
+  ).toBe("base proxy");
+  expect(
+    execFileSync("git", ["show", `${accepted.delivery!.commit}:verify.cjs`], {
+      cwd: repository,
+      encoding: "utf8",
+      windowsHide: true,
+    }),
+  ).toContain("task-only change");
+  expect(
+    execFileSync(
+      "git",
+      ["show", `${accepted.delivery!.commit}:task-only.cjs`],
+      { cwd: repository, encoding: "utf8", windowsHide: true },
+    ),
+  ).toContain("new task file");
+  expect(
+    fs.readFileSync(path.join(repository, "local-proxy.cjs"), "utf8"),
+  ).toBe("developer proxy");
+  expect(git("status", "--short")).toContain("local-proxy.cjs");
+});
+
+test("acceptance refuses to combine previous and current edits from the same file", async () => {
+  fs.appendFileSync(path.join(repository, "verify.cjs"), "\n// previous task");
+  const remote = path.join(root, "overlap-delivery.git");
+  execFileSync("git", ["init", "--bare", remote], { windowsHide: true });
+  git("remote", "add", "origin", remote);
+  const task = create({
+    kind: "bug",
+    workflowMode: "quick",
+    workspaceMode: "current",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+  });
+  configure({
+    developmentFiles: {
+      "verify.cjs": "console.log('combined')\n// previous task",
+    },
+  });
+  await service.action(task.id, "fix");
+  await status(task.id, "waiting-review", 60000);
+
+  await expect(service.action(task.id, "accept")).rejects.toThrow(
+    /无法安全拆分两轮代码/,
+  );
+  expect(git("log", "--oneline", "--all").split("\n")).toHaveLength(1);
+  expect(git("status", "--short")).toContain("verify.cjs");
 });
 
 test("quick source guard blocks new package edits without erasing the generated or existing code", async () => {

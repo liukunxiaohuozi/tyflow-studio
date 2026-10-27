@@ -800,6 +800,24 @@ export class StudioService {
           this.policy.changes(diffReview),
           "验收前差异审查未通过，请检查计划外或未覆盖改动",
         );
+        const taskChanges = await this.taskChanges(task);
+        task.workspaceOverlap = taskChanges.overlaps;
+        if (taskChanges.overlaps.length)
+          throw new ProviderFailure(
+            "git",
+            "TASK_DIRTY_OVERLAP",
+            `请校验代码改动：以下文件在任务开始前已有未提交修改，本次任务又修改了同一文件，Studio 无法安全拆分两轮代码，因此未自动提交：${taskChanges.overlaps.join(", ")}。请在编辑器中核对并手动提交，或整理后重新执行任务。`,
+          );
+        const deliveryFiles = taskChanges.files
+          .filter(
+            (file) =>
+              !isTestArtifact(
+                snapshot.project.directory,
+                file.path,
+                file.changeType,
+              ),
+          )
+          .map((file) => file.path);
         this.log(task, "startup", `验收通过，提交并推送到 ${branch}`);
         try {
           task.stage = "startup";
@@ -829,6 +847,7 @@ export class StudioService {
                   this.publish(task);
                 },
                 { PATH: executablePath(settings.agent.command) },
+                deliveryFiles,
               ),
             { reuse: false },
           );
@@ -970,7 +989,7 @@ export class StudioService {
       this.log(
         task,
         "development",
-        "用户已明确确认保留未提交修改并继续；现有修改可能与本次开发一同进入检查、提交和推送。",
+        "用户已确认保留未提交修改并继续；Studio 将按任务开始前基线隔离差异，未被本次触及的文件不会进入自动提交。",
       );
     let canonical: string;
     try {
@@ -1559,10 +1578,8 @@ export class StudioService {
     const info = await this.scm.inspectRepository(
       task.snapshot.project.directory,
     );
-    const files = await this.scm.changedFilesSince(
-      task.snapshot.project.directory,
-      task.snapshot.baseCommit,
-    );
+    const { files, overlaps } = await this.taskChanges(task);
+    task.workspaceOverlap = overlaps;
     const plan = normalizePlanTraceability(
       task.snapshot.plan,
       this.sourceKind(task),
@@ -1680,11 +1697,13 @@ export class StudioService {
   }
   private async workspaceFileState(task: Task) {
     if (!task.snapshot) throw new Error("执行快照缺失");
-    const root = task.snapshot.project.directory;
-    const files = await this.scm.changedFilesSince(
-      root,
+    return this.workspaceFileStateAt(
+      task.snapshot.project.directory,
       task.snapshot.baseCommit,
     );
+  }
+  private async workspaceFileStateAt(root: string, baseCommit: string) {
+    const files = await this.scm.changedFilesSince(root, baseCommit);
     const state: Record<string, string> = {};
     for (const file of files.sort((a, b) => a.path.localeCompare(b.path))) {
       const absolute = path.resolve(root, file.path);
@@ -1710,6 +1729,33 @@ export class StudioService {
         state[name] = `environment:${this.fileDigest(file)}`;
     }
     return state;
+  }
+  private async taskChanges(task: Task) {
+    if (!task.snapshot) throw new Error("执行快照缺失");
+    const root = task.snapshot.project.directory;
+    const files = await this.scm.changedFilesSince(
+      root,
+      task.snapshot.baseCommit,
+    );
+    if (!task.workspaceBaseline) return { files, overlaps: [] as string[] };
+    const after = await this.workspaceFileState(task);
+    const changedPaths = [
+      ...new Set([
+        ...Object.keys(task.workspaceBaseline),
+        ...Object.keys(after),
+      ]),
+    ].filter((file) => task.workspaceBaseline![file] !== after[file]);
+    const changed = new Set(
+      changedPaths.map((file) => file.replace(/\\/g, "/")),
+    );
+    const overlaps = changedPaths
+      .filter((file) => task.workspaceBaseline![file] !== undefined)
+      .map((file) => file.replace(/\\/g, "/"))
+      .sort();
+    return {
+      files: files.filter((file) => changed.has(file.path.replace(/\\/g, "/"))),
+      overlaps,
+    };
   }
   private async develop(
     task: Task,
@@ -1804,20 +1850,45 @@ export class StudioService {
           } else if (quick) {
             if (synced.branch !== task.branch.base)
               throw new Error("当前分支已变化；轻量修改不会自动切换分支");
-            if (synced.dirty && !allowDirty)
-              throw new Error(
-                "工作区存在未提交修改，请确认保留现有代码后再继续",
+            if (synced.dirty)
+              this.log(
+                task,
+                "development",
+                `检测到 ${synced.changes.length} 项已有未提交修改；Studio 已记录基线并继续，本次未触及的文件不会进入差异审查或提交。`,
               );
             prepared = { branch: synced.branch, commit: synced.commit };
-          } else
+          } else {
+            const selectedBranch =
+              synced.remoteBranches?.find(
+                (branch) =>
+                  branch.ref === task.branch.base ||
+                  branch.name === task.branch.base,
+              )?.branch ?? task.branch.base;
+            const staysOnCurrentBranch =
+              task.branch.mode === "existing" &&
+              latestTarget === synced.commit &&
+              (task.branch.base === synced.branch ||
+                task.branch.name === synced.branch ||
+                selectedBranch === synced.branch);
+            if (synced.dirty && !allowDirty && !staysOnCurrentBranch)
+              throw new Error(
+                `当前分支 ${synced.branch} 有未提交修改，无法安全切换到所选分支；请选择当前分支或先处理已有修改`,
+              );
+            if (synced.dirty && staysOnCurrentBranch)
+              this.log(
+                task,
+                "development",
+                `检测到 ${synced.changes.length} 项已有未提交修改；当前任务继续使用 ${synced.branch}，并仅追踪本次新增差异。`,
+              );
             prepared = await this.scm.prepareBranch(
               project.directory,
               task.branch,
               task.baseCommit,
               task.targetCommit,
               signal,
-              allowDirty,
+              allowDirty || staysOnCurrentBranch,
             );
+          }
           this.log(
             task,
             "development",
@@ -1848,7 +1919,11 @@ export class StudioService {
             directFix,
           };
           task.approvedRevision = task.planRevision;
-          if (quick) task.quickBaseline = await this.workspaceFileState(task);
+          if (!task.workspace) {
+            task.workspaceBaseline = await this.workspaceFileState(task);
+            task.workspaceOverlap = [];
+            if (quick) task.quickBaseline = task.workspaceBaseline;
+          }
           this.publish(task);
           return task.snapshot!;
         },
@@ -1944,10 +2019,8 @@ export class StudioService {
             "DEVELOPMENT_CHECK_CHANGED_SOURCE",
             "开发检查阶段修改了代码或配置，结果无效；改动已保留，请审查后重新修复，不会自动回滚",
           );
-        const changedFiles = await this.scm.changedFilesSince(
-          task.snapshot!.project.directory,
-          task.snapshot!.baseCommit,
-        );
+        const { files: changedFiles, overlaps } = await this.taskChanges(task);
+        task.workspaceOverlap = overlaps;
         const implementationFiles = changedFiles.filter(
           (file) =>
             !isTestArtifact(
@@ -1999,6 +2072,14 @@ export class StudioService {
       { after: developmentKey },
     );
     task.checks = result.checks;
+    const { overlaps } = await this.taskChanges(task);
+    task.workspaceOverlap = overlaps;
+    if (overlaps.length)
+      this.log(
+        task,
+        "development",
+        `请校验代码改动：任务开始前已有未提交修改，本次又修改了相同文件：${overlaps.join(", ")}。开发继续完成，但自动提交前必须人工处理这些重叠文件。`,
+      );
     this.assertHistoricalEvidence(task);
     await this.checkpoint(
       task,

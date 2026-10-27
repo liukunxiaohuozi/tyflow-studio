@@ -268,6 +268,10 @@ export interface Task extends TaskInput {
   };
   agentSession?: { threadId: string; updatedAt: string };
   quickBaseline?: Record<string, string>;
+  /** Hashes of files already dirty when current-checkout development began. */
+  workspaceBaseline?: Record<string, string>;
+  /** Pre-existing dirty files that were also changed by this task. */
+  workspaceOverlap?: string[];
   browserTest?: import("./browser-test").BrowserTestConfig;
   checkpoints?: WorkflowCheckpoint[];
   failure?: TaskFailure;
