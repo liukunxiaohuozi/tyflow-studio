@@ -36,6 +36,7 @@ import {
   developmentValidationPending,
   developmentProducedNoChanges,
   canRecheckDevelopment,
+  canVerifyHistoricalQuality,
 } from "../shared/development-checks";
 const BrowserTestDrawer = lazy(() => import("./BrowserTestDrawer"));
 
@@ -129,6 +130,7 @@ export default function RunView({
   const noDevelopmentChanges = developmentProducedNoChanges(task);
   const incomplete =
     developmentPending || validationPending(task.failure?.code);
+  const historicalQualityCandidate = canVerifyHistoricalQuality(task);
   const tone = incomplete ? "warning" : toneOf(task.status);
   const logs = task.logs.filter(
     (x) =>
@@ -145,22 +147,31 @@ export default function RunView({
     const timer = window.setInterval(() => setActivityNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [task.status, task.activity?.lastOutputAt]);
-  async function action(value: TaskAction, developmentChecksOnly = false) {
+  async function action(
+    value: TaskAction,
+    options?: Parameters<StudioAPI["taskAction"]>[2],
+  ) {
     if (!api) return;
     setBusy(true);
     try {
       onTask(
-        await api.taskAction(
-          task.id,
-          value,
-          developmentChecksOnly ? { developmentChecksOnly: true } : undefined,
-        ),
+        await api.taskAction(task.id, value, options),
       );
     } catch (error) {
       report((error as Error).message, true);
     } finally {
       setBusy(false);
     }
+  }
+  async function completeAndPush() {
+    if (task.workspaceOverlap?.length)
+      report(
+        I18nT(
+          "检测到上一次未提交修改与本次修改交织在同一文件中，无法安全拆分；将把这些文件当前的完整内容一起提交并推送：",
+          "Previous uncommitted changes and this task's changes are intertwined in the same files and cannot be safely separated. The complete current files will be committed and pushed:",
+        ) + task.workspaceOverlap.join("、"),
+      );
+    await action("accept");
   }
   async function confirmStart() {
     if (!api) return;
@@ -618,8 +629,8 @@ export default function RunView({
             : task.delivery?.pushedAt
               ? `${I18nT("本次任务已完成，代码已推送到", "Task completed and pushed to")} ${task.delivery.remote}/${task.delivery.branch} (${task.delivery.commit.slice(0, 8)}).`
               : I18nT(
-                  "本次任务已验收，计划、测试与执行记录已保留。",
-                  "Task accepted. The plan, checks and execution records are retained.",
+                  "本次任务已完成，计划、测试与执行记录已保留。",
+                  "Task completed. The plan, checks and execution records are retained.",
                 )}
         </Notice>
       )}
@@ -1117,10 +1128,20 @@ export default function RunView({
                     <button
                       className="primary"
                       disabled={busy}
-                      onClick={() => void action("retry", true)}
+                      onClick={() =>
+                        void action("retry", { developmentChecksOnly: true })
+                      }
                     >
                       <RotateCcw size={15} />
-                      {I18nT("重新执行开发检查", "Rerun development checks")}
+                      {historicalQualityCandidate
+                        ? I18nT(
+                            "核验历史问题并继续",
+                            "Verify historical issues and continue",
+                          )
+                        : I18nT(
+                            "重新执行开发检查",
+                            "Rerun development checks",
+                          )}
                     </button>
                   )}
                   <button disabled={busy} onClick={() => void action("retry")}>
@@ -1252,14 +1273,14 @@ export default function RunView({
                 <button
                   className="primary"
                   disabled={busy}
-                  onClick={() => void action("accept")}
+                  onClick={() => void completeAndPush()}
                 >
                   <CheckCircle2 size={16} />
                   {busy
                     ? I18nT("正在提交并推送…", "Committing and pushing…")
                     : I18nT(
-                        "我已验证，提交并推送代码",
-                        "Reviewed: commit and push code",
+                        "验证完成，推送代码",
+                        "Verification complete, push code",
                       )}
                 </button>
               )}

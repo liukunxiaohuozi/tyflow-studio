@@ -19,3 +19,11 @@ export const canRecheckDevelopment = (task: Task) =>
   Boolean(task.snapshot) &&
   !developmentProducedNoChanges(task) &&
   recoverableDevelopmentChecks.includes(task.failure?.code ?? "");
+export const canVerifyHistoricalQuality = (task: Task) =>
+  canRecheckDevelopment(task) &&
+  task.checks.some(
+    (check) => check.state === "failed" && check.purpose === "quality",
+  ) &&
+  task.checks.every(
+    (check) => check.state !== "failed" || check.purpose === "quality",
+  );

@@ -76,7 +76,7 @@ export default function Records({
     },
     {
       value: tasks.filter((t) => t.status === "accepted").length,
-      label: I18nT("已验收", "Accepted"),
+      label: I18nT("已完成", "Completed"),
     },
   ];
   return (

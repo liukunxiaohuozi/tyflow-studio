@@ -803,10 +803,11 @@ export class StudioService {
         const taskChanges = await this.taskChanges(task);
         task.workspaceOverlap = taskChanges.overlaps;
         if (taskChanges.overlaps.length)
-          throw new ProviderFailure(
-            "git",
-            "TASK_DIRTY_OVERLAP",
-            `请校验代码改动：以下文件在任务开始前已有未提交修改，本次任务又修改了同一文件，Studio 无法安全拆分两轮代码，因此未自动提交：${taskChanges.overlaps.join(", ")}。请在编辑器中核对并手动提交，或整理后重新执行任务。`,
+          this.log(
+            task,
+            "startup",
+            `检测到两次代码改动已交织在同一文件中，无法安全拆分；将按当前完整文件内容一起提交并推送：${taskChanges.overlaps.join(", ")}`,
+            "info",
           );
         const deliveryFiles = taskChanges.files
           .filter(
@@ -1517,7 +1518,7 @@ export class StudioService {
         );
         if (
           !task.snapshot ||
-          proof.tool !== "eslint" ||
+          !["eslint", "tslint"].includes(proof.tool) ||
           proof.baseCommit !== task.snapshot.baseCommit ||
           proof.environment !==
             qualityEnvironmentIdentity(task.snapshot.project.directory) ||

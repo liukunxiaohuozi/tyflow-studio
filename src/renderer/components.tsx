@@ -36,7 +36,7 @@ export function statusLabel(status: TaskStatus) {
     testing: I18nT("测试中", "Testing"),
     starting: I18nT("启动中", "Starting"),
     review: I18nT("待验收", "Awaiting acceptance"),
-    accepted: I18nT("已验收", "Accepted"),
+    accepted: I18nT("完成", "Completed"),
     failed: I18nT("执行失败", "Failed"),
     stopped: I18nT("已终止", "Terminated"),
   };

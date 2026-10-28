@@ -443,7 +443,7 @@ test("acceptance commits only files changed by this task and leaves earlier loca
   expect(git("status", "--short")).toContain("local-proxy.cjs");
 });
 
-test("acceptance refuses to combine previous and current edits from the same file", async () => {
+test("acceptance explains intertwined edits and pushes the complete overlapping file", async () => {
   fs.appendFileSync(path.join(repository, "verify.cjs"), "\n// previous task");
   const remote = path.join(root, "overlap-delivery.git");
   execFileSync("git", ["init", "--bare", remote], { windowsHide: true });
@@ -462,11 +462,26 @@ test("acceptance refuses to combine previous and current edits from the same fil
   await service.action(task.id, "fix");
   await status(task.id, "waiting-review", 60000);
 
-  await expect(service.action(task.id, "accept")).rejects.toThrow(
-    /无法安全拆分两轮代码/,
-  );
-  expect(git("log", "--oneline", "--all").split("\n")).toHaveLength(1);
-  expect(git("status", "--short")).toContain("verify.cjs");
+  const accepted = await service.action(task.id, "accept");
+
+  expect(accepted.status).toBe("accepted");
+  expect(accepted.workspaceOverlap).toEqual(["verify.cjs"]);
+  expect(
+    accepted.logs.some(
+      (entry) =>
+        entry.message.includes("两次代码改动已交织") &&
+        entry.message.includes("verify.cjs") &&
+        entry.message.includes("完整文件内容一起提交并推送"),
+    ),
+  ).toBe(true);
+  expect(
+    execFileSync("git", ["show", "refs/heads/main:verify.cjs"], {
+      cwd: remote,
+      encoding: "utf8",
+      windowsHide: true,
+    }),
+  ).toContain("console.log('combined')\n// previous task");
+  expect(git("status", "--short")).not.toContain("verify.cjs");
 });
 
 test("quick source guard blocks new package edits without erasing the generated or existing code", async () => {
@@ -2627,13 +2642,17 @@ test("an independently clean lint proof cannot be reused after source changes", 
   );
 });
 
-test.each([false, true])(
-  "historical warning acceptance validates proof before delivery (tampered=%s)",
-  async (tampered) => {
+test.each([
+  { tool: "eslint", tampered: false },
+  { tool: "tslint", tampered: false },
+  { tool: "eslint", tampered: true },
+])(
+  "historical $tool warning acceptance validates proof before delivery (tampered=$tampered)",
+  async ({ tool, tampered }) => {
     const task = await developed();
     const evidence = new EvidenceStore(store.directory, (value) => value);
     const proof = evidence.saveResult(task, {
-      tool: "eslint",
+      tool,
       file: "verify.cjs",
       baseCommit: task.snapshot!.baseCommit,
       environment: qualityEnvironmentIdentity(repository),

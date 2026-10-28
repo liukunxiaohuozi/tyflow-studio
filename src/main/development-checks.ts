@@ -26,6 +26,7 @@ const historicalQualityRules = new Set([
   "no-unused-vars",
   "@typescript-eslint/no-unused-vars",
   "prettier/prettier",
+  "curly",
 ]);
 export function unchangedQualityDiagnostics(
   before: Diagnostic[],
@@ -98,7 +99,7 @@ export function qualityEnvironmentIdentity(directory: string) {
     if (!fs.existsSync(folder)) continue;
     for (const name of fs.readdirSync(folder).sort()) {
       if (
-        !/(?:eslint|package\.json|package-lock|pnpm-lock|yarn\.lock|tsconfig)/i.test(
+        !/(?:eslint|tslint|package\.json|package-lock|pnpm-lock|yarn\.lock|tsconfig)/i.test(
           name,
         )
       )
@@ -108,16 +109,19 @@ export function qualityEnvironmentIdentity(directory: string) {
         hash.update(file).update(fs.readFileSync(file));
     }
   }
-  const installedTool = path.join(
-    directory,
-    "node_modules/eslint/package.json",
-  );
-  if (fs.existsSync(installedTool)) hash.update(fs.readFileSync(installedTool));
+  for (const tool of ["eslint", "tslint", "typescript"]) {
+    const installedTool = path.join(
+      directory,
+      `node_modules/${tool}/package.json`,
+    );
+    if (fs.existsSync(installedTool))
+      hash.update(fs.readFileSync(installedTool));
+  }
   return hash.digest("hex");
 }
 
 // Static script; never execute a command supplied in an Agent check.
-const lintRunner = String.raw`
+const eslintRunner = String.raw`
 const fs=require('node:fs'),path=require('node:path'),{createRequire}=require('node:module'),{createHash}=require('node:crypto');
 let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',b=>input+=b);process.stdin.on('end',async()=>{try{
 const p=JSON.parse(input),requireProject=createRequire(path.join(p.directory,'package.json')),mod=requireProject('eslint');
@@ -131,6 +135,19 @@ if(!before||!after||before.messages.some(m=>m.message.includes('File ignored'))|
 files.push({file:f.file,before:normalize(before,f.before),after:normalize(after,f.after),configRules:config.rules,sourceHash:createHash('sha256').update(f.after).digest('hex')});
 }
 console.log(JSON.stringify({files,version:requireProject('eslint/package.json').version}));
+}catch(e){console.error(e.message);process.exitCode=1;}});`;
+
+// TSLint is still used by some connected legacy projects. Lint both source
+// versions in memory with the project's installed TSLint and configuration;
+// never execute a command or formatter supplied by the Agent.
+const tslintRunner = String.raw`
+const path=require('node:path'),{createRequire}=require('node:module'),{createHash}=require('node:crypto');
+let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',b=>input+=b);process.stdin.on('end',()=>{try{
+const p=JSON.parse(input),requireProject=createRequire(path.join(p.directory,'package.json')),{Linter,Configuration}=requireProject('tslint');
+const files=[];
+const normalize=(filename,text,configuration)=>{const linter=new Linter({fix:false,formatter:'json'});linter.lint(filename,text,configuration);return linter.getResult().failures.map(f=>{const pos=f.getStartPosition().getLineAndCharacter(),line=text.split(/\r?\n/)[pos.line]?.trim()??'';return {ruleId:f.getRuleName(),severity:2,message:f.getFailure(),column:pos.character+1,fatal:false,source:line};});};
+for(const f of p.files){const filename=path.join(p.directory,f.file),configuration=Configuration.findConfiguration(null,filename).results;files.push({file:f.file,before:normalize(filename,f.before,configuration),after:normalize(filename,f.after,configuration),sourceHash:createHash('sha256').update(f.after).digest('hex')});}
+console.log(JSON.stringify({files,version:requireProject('tslint/package.json').version}));
 }catch(e){console.error(e.message);process.exitCode=1;}});`;
 
 export async function reconcileHistoricalLint(options: {
@@ -149,16 +166,21 @@ export async function reconcileHistoricalLint(options: {
     delete check.historical;
     delete check.qualityProof;
   }
-  const candidates = checks.filter(
-    (c) =>
-      c.state !== "passed" &&
-      c.purpose !== "regression" &&
-      c.purpose !== "manual" &&
-      /\beslint\b/i.test(c.name) &&
-      !/[+&;|]|\b(?:tsc|typescript|typecheck|jest|test|build|prettier)\b|类型|构建|回归|与|及/i.test(
-        c.name,
-      ),
-  );
+  const isFocusedQualityCheck = (check: CheckResult, tool: "eslint" | "tslint") =>
+    check.state !== "passed" &&
+    check.purpose !== "regression" &&
+    check.purpose !== "manual" &&
+    new RegExp(`\\b${tool}\\b`, "i").test(check.name) &&
+    !/[+&;|]|\b(?:tsc|typescript|typecheck|jest|test|build|prettier)\b|类型|构建|回归|与|及/i.test(
+      check.name,
+    );
+  const candidateGroups = (["eslint", "tslint"] as const)
+    .map((tool) => ({
+      tool,
+      checks: checks.filter((check) => isFocusedQualityCheck(check, tool)),
+    }))
+    .filter((group) => group.checks.length);
+  const candidates = candidateGroups.flatMap((group) => group.checks);
   if (!candidates.length) return checks;
   // Report wording/commands are evidence only. Never execute or infer success
   // from them; run a fixed tool adapter over the complete changed-source scope.
@@ -174,7 +196,7 @@ export async function reconcileHistoricalLint(options: {
     if (
       qualityEnvironmentIdentity(directory) !== options.identityBefore ||
       options.changedFiles.some((f) =>
-        /(?:eslint|(?:^|\/)package\.json|(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock)|tsconfig)/i.test(
+        /(?:eslint|tslint|(?:^|\/)package\.json|(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock)|tsconfig)/i.test(
           f,
         ),
       )
@@ -232,77 +254,109 @@ export async function reconcileHistoricalLint(options: {
     }
     if (JSON.stringify(inputs).length > 2_000_000)
       throw new Error("聚焦检查总大小超出上限");
-    const raw = await runCommand(
-      resolveCommand("node", options.preferredCommand),
-      ["-e", lintRunner],
-      {
-        cwd: directory,
-        signal,
-        timeout: 30000,
-        input: JSON.stringify({ directory, files: inputs }),
-      },
-    );
-    const report = JSON.parse(raw) as {
-      files: LintFileProof[];
-      version: string;
-    };
-    if (
-      report.files.length !== inputs.length ||
-      inputs.some(
-        (input, i) =>
-          report.files[i].file !== input.file ||
-          fs.readFileSync(path.join(directory, input.file), "utf8") !==
-            input.after,
-      ) ||
-      qualityEnvironmentIdentity(directory) !== options.identityBefore
-    )
-      throw new Error("检查过程中源码或配置发生变化");
-    const reference = evidence.saveResult(task, {
-      tool: "eslint",
-      baseCommit: task.snapshot.baseCommit,
-      environment: options.identityBefore,
-      reported,
-      ...report,
-    });
-    const count = report.files.reduce((sum, f) => sum + f.after.length, 0);
-    const comparable = report.files.every(
-      (f) => !f.after.length || unchangedQualityDiagnostics(f.before, f.after),
-    );
-    for (const check of candidates) {
-      check.evidence = [
-        ...(check.evidence ?? []),
-        {
-          kind: "log",
-          path: reference.path,
-          sha256: reference.sha256,
-          summary: "Studio 独立 ESLint 检查及 Agent 原始报告",
-        },
-      ];
-      if (!count) {
-        check.state = "passed";
-        check.qualityProof = reference;
-        check.detail +=
-          "\nStudio 已独立重新执行全部变更源码的 ESLint：当前无诊断；此前报告保留在证据中。";
-      } else if (comparable) {
-        check.state = "failed";
-        check.historical = {
-          evidencePath: reference.path,
-          sha256: reference.sha256,
-          count,
+    for (const group of candidateGroups) {
+      try {
+        const raw = await runCommand(
+          resolveCommand("node", options.preferredCommand),
+          ["-e", group.tool === "eslint" ? eslintRunner : tslintRunner],
+          {
+            cwd: directory,
+            signal,
+            timeout: 30000,
+            input: JSON.stringify({ directory, files: inputs }),
+          },
+        );
+        const report = JSON.parse(raw) as {
+          files: LintFileProof[];
+          version: string;
         };
-        check.detail += `\nStudio 已独立对比全部 ${report.files.length} 个变更源码：${count} 项历史质量问题，无新增诊断；原始报告保留，不计为检查通过。`;
-      } else {
-        check.state = "failed";
-        check.detail +=
-          "\nStudio 独立检查发现新增、变化或不可豁免的 ESLint 诊断：" +
-          report.files
-            .flatMap((f) =>
-              f.after.map(
-                (d) => `${f.file}: ${d.ruleId ?? "fatal"} ${d.message}`,
-              ),
-            )
-            .join("；")
-            .slice(0, 1500);
+        if (
+          report.files.length !== inputs.length ||
+          inputs.some(
+            (input, i) =>
+              report.files[i].file !== input.file ||
+              fs.readFileSync(path.join(directory, input.file), "utf8") !==
+                input.after,
+          ) ||
+          qualityEnvironmentIdentity(directory) !== options.identityBefore
+        )
+          throw new Error("检查过程中源码或配置发生变化");
+        const reference = evidence.saveResult(task, {
+          tool: group.tool,
+          baseCommit: task.snapshot.baseCommit,
+          environment: options.identityBefore,
+          reported,
+          ...report,
+        });
+        const count = report.files.reduce(
+          (sum, file) => sum + file.after.length,
+          0,
+        );
+        const comparable = report.files.every(
+          (file) =>
+            !file.after.length ||
+            unchangedQualityDiagnostics(file.before, file.after),
+        );
+        const toolLabel = group.tool === "eslint" ? "ESLint" : "TSLint";
+        for (const check of group.checks) {
+          check.evidence = [
+            ...(check.evidence ?? []),
+            {
+              kind: "log",
+              path: reference.path,
+              sha256: reference.sha256,
+              summary: `Studio 独立 ${toolLabel} 检查及 Agent 原始报告`,
+            },
+          ];
+          if (!count) {
+            check.state = "passed";
+            check.qualityProof = reference;
+            check.detail += `\nStudio 已独立重新执行全部变更源码的 ${toolLabel}：当前无诊断；此前报告保留在证据中。`;
+          } else if (comparable) {
+            check.state = "failed";
+            check.historical = {
+              evidencePath: reference.path,
+              sha256: reference.sha256,
+              count,
+            };
+            check.detail += `\nStudio 已独立对比全部 ${report.files.length} 个变更源码：${count} 项历史质量问题，无新增诊断；原始报告保留，不计为检查通过。`;
+          } else {
+            check.state = "failed";
+            check.detail +=
+              `\nStudio 独立检查发现新增、变化或不可豁免的 ${toolLabel} 诊断：` +
+              report.files
+                .flatMap((file) =>
+                  file.after.map(
+                    (diagnostic) =>
+                      `${file.file}: ${diagnostic.ruleId ?? "fatal"} ${diagnostic.message}`,
+                  ),
+                )
+                .join("；")
+                .slice(0, 1500);
+          }
+        }
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const toolLabel = group.tool === "eslint" ? "ESLint" : "TSLint";
+        for (const check of group.checks) {
+          check.state = "blocked";
+          check.detail +=
+            `\nStudio 独立 ${toolLabel} 核对未完成：` +
+            (error instanceof Error ? error.message : String(error)).slice(
+              0,
+              500,
+            ) +
+            "；原始报告保留，不能据此确认有新增错误或直接通过。";
+          check.evidence = [
+            ...(check.evidence ?? []),
+            {
+              kind: "log",
+              path: reported.path,
+              sha256: reported.sha256,
+              summary: `Agent 原始 ${toolLabel} 报告，独立核对尚未完成`,
+            },
+          ];
+        }
       }
     }
   } catch (error) {
@@ -310,7 +364,7 @@ export async function reconcileHistoricalLint(options: {
     for (const check of candidates) {
       check.state = "blocked";
       check.detail +=
-        "\nStudio 独立 ESLint 核对未完成：" +
+        "\nStudio 独立质量基线核对未完成：" +
         (error instanceof Error ? error.message : String(error)).slice(0, 500) +
         "；原始报告保留，不能据此确认有新增错误或直接通过。";
       check.evidence = [
@@ -319,7 +373,7 @@ export async function reconcileHistoricalLint(options: {
           kind: "log",
           path: reported.path,
           sha256: reported.sha256,
-          summary: "Agent 原始 ESLint 报告，独立核对尚未完成",
+          summary: "Agent 原始质量检查报告，独立核对尚未完成",
         },
       ];
     }

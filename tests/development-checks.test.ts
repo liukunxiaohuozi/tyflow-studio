@@ -13,6 +13,7 @@ import {
 } from "../src/main/development-checks";
 import { EvidenceStore } from "../src/main/evidence";
 import type { Task } from "../src/shared/contracts";
+import { canVerifyHistoricalQuality } from "../src/shared/development-checks";
 // Integration cases launch real Git/Node/ESLint children with 10s/30s bounds.
 jest.setTimeout(45000);
 
@@ -135,6 +136,29 @@ test("real failures and unfinished regression checks block completion, manual ac
   ).toBe("completed");
 });
 
+test("only a recoverable quality-only failure offers historical verification", () => {
+  const task = {
+    status: "failed",
+    stage: "development",
+    snapshot: { baseCommit: "a".repeat(40) },
+    failure: { code: "DEVELOPMENT_CHECK_FAILED" },
+    checks: [lint, { ...regression, state: "unexecuted", purpose: "manual" }],
+  } as Task;
+  expect(canVerifyHistoricalQuality(task)).toBe(true);
+  expect(
+    canVerifyHistoricalQuality({
+      ...task,
+      checks: [...task.checks, { ...regression, state: "failed" }],
+    }),
+  ).toBe(false);
+  expect(
+    canVerifyHistoricalQuality({
+      ...task,
+      failure: { code: "DEVELOPMENT_NO_CHANGES" } as Task["failure"],
+    }),
+  ).toBe(false);
+});
+
 describe("production child-process lint baseline comparison", () => {
   let root: string;
   let task: Task;
@@ -235,6 +259,72 @@ describe("production child-process lint baseline comparison", () => {
         sha256: result.historical!.sha256,
       }),
     ).toMatchObject({ tool: "eslint", files: [{ file: relative }] });
+  });
+  test("unchanged project TSLint diagnostics become evidence-linked historical warnings", async () => {
+    fs.mkdirSync(path.join(root, "node_modules/tslint"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "node_modules/tslint/package.json"),
+      JSON.stringify({ main: "index.cjs", version: "5.20.1-fixture" }),
+    );
+    fs.writeFileSync(
+      path.join(root, "node_modules/tslint/index.cjs"),
+      `class Failure {
+  constructor(file,line,source){this.file=file;this.line=line;this.source=source}
+  getRuleName(){return 'curly'}
+  getFailure(){return 'if statements must be braced'}
+  getStartPosition(){return {getLineAndCharacter:()=>({line:this.line,character:0})}}
+}
+class Linter {
+  lint(file,source){
+    this.failures=source.split(/\\r?\\n/).flatMap((line,index)=>/^if \\(/.test(line.trim())?[new Failure(file,index,line.trim())]:[])
+  }
+  getResult(){return {failures:this.failures||[]}}
+}
+module.exports={Linter,Configuration:{findConfiguration:()=>({results:{}})}};`,
+    );
+    fs.writeFileSync(path.join(root, "tslint.json"), '{"rules":{"curly":true}}');
+    const baseline = "if (mode)\n  render();\n";
+    fs.writeFileSync(path.join(root, relative), baseline);
+    git("add", ".");
+    git(
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "tslint baseline",
+    );
+    task.snapshot!.baseCommit = git("rev-parse", "HEAD");
+    fs.writeFileSync(
+      path.join(root, relative),
+      "// feature change\n" + baseline + "const repaired = true;\n",
+    );
+    const [result] = await compare(undefined, [
+      {
+        name: "既有渲染器 TSLint",
+        state: "failed",
+        purpose: "quality",
+        detail: "same pre-existing curly violations",
+        evidence: [
+          {
+            kind: "command",
+            command: ".\\node_modules\\.bin\\tslint.cmd -c tslint.json src/logic.js",
+            exitCode: 1,
+            summary: "one historical curly violation",
+          },
+        ],
+      },
+    ]);
+    expect(result.state).toBe("failed");
+    expect(result.historical?.count).toBe(1);
+    expect(
+      evidence.readResult(task, {
+        path: result.historical!.evidencePath,
+        sha256: result.historical!.sha256,
+      }),
+    ).toMatchObject({ tool: "tslint", files: [{ file: relative }] });
   });
   test("same error count on changed faulty code is not waived", async () => {
     fs.writeFileSync(
