@@ -8,6 +8,7 @@ import {
   FileText,
   FlaskConical,
   GitBranch,
+  GitCompareArrows,
   Loader2,
   MessageSquarePlus,
   Play,
@@ -32,6 +33,7 @@ import { I18nT } from "./i18n";
 import AttachmentImages from "./AttachmentImages";
 import RecoveryPanel from "./RecoveryPanel";
 import SupplementDialog from "./SupplementDialog";
+import CodeDiffView from "./CodeDiffView";
 import { validationPending } from "../shared/browser-test";
 import {
   developmentValidationPending,
@@ -121,6 +123,7 @@ export default function RunView({
   const [diagnosisOpen, setDiagnosisOpen] = useState(false);
   const [browserPreparationOpen, setBrowserPreparationOpen] = useState(false);
   const [overlapConfirmOpen, setOverlapConfirmOpen] = useState(false);
+  const [codeDiffOpen, setCodeDiffOpen] = useState(false);
   const [activityNow, setActivityNow] = useState(Date.now());
   const logRef = useRef<HTMLDivElement>(null);
   const running = activeStatuses.includes(task.status);
@@ -156,9 +159,7 @@ export default function RunView({
     if (!api) return;
     setBusy(true);
     try {
-      onTask(
-        await api.taskAction(task.id, value, options),
-      );
+      onTask(await api.taskAction(task.id, value, options));
     } catch (error) {
       report((error as Error).message, true);
     } finally {
@@ -284,6 +285,15 @@ export default function RunView({
         I18nT("确认执行", "Confirm execution"),
         I18nT("运行与验收", "Run and accept"),
       ];
+  if (codeDiffOpen && api)
+    return (
+      <CodeDiffView
+        api={api}
+        task={task}
+        back={() => setCodeDiffOpen(false)}
+        report={report}
+      />
+    );
   return (
     <div
       className={`run-page tone-${tone}${analysisReady ? " analysis-ready" : ""}${analysisRunning ? " analysis-running" : ""}`}
@@ -1141,10 +1151,7 @@ export default function RunView({
                             "核验历史问题并继续",
                             "Verify historical issues and continue",
                           )
-                        : I18nT(
-                            "重新执行开发检查",
-                            "Rerun development checks",
-                          )}
+                        : I18nT("重新执行开发检查", "Rerun development checks")}
                     </button>
                   )}
                   <button disabled={busy} onClick={() => void action("retry")}>
@@ -1186,9 +1193,7 @@ export default function RunView({
                     {I18nT("修复并重测", "Repair and retest")}
                   </button>
                 )}
-              {["waiting-test", "waiting-review", "review"].includes(
-                task.status,
-              ) && (
+              {task.status === "waiting-test" && (
                 <button disabled={busy} onClick={() => setSupplementOpen(true)}>
                   <MessageSquarePlus size={15} />
                   {I18nT("追加信息", "Add context")}
@@ -1208,6 +1213,18 @@ export default function RunView({
                       "自动化测试介入（可选）",
                       "Run automated testing (optional)",
                     )}
+                  </button>
+                )}
+              {[
+                "waiting-test",
+                "waiting-review",
+                "review",
+                "accepted",
+              ].includes(task.status) &&
+                api && (
+                  <button disabled={busy} onClick={() => setCodeDiffOpen(true)}>
+                    <GitCompareArrows size={16} />
+                    {I18nT("代码对比", "Compare code")}
                   </button>
                 )}
               {task.status === "waiting-review" &&
@@ -1289,7 +1306,9 @@ export default function RunView({
               )}
             </>
           )}
-          {!["accepted", "stopped"].includes(task.status) && (
+          {!["accepted", "stopped", "waiting-review", "review"].includes(
+            task.status,
+          ) && (
             <button
               className="danger-ghost"
               disabled={busy}

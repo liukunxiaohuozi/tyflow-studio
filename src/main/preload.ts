@@ -29,6 +29,7 @@ const api: StudioAPI = {
   deleteTask: (id) => ipcRenderer.invoke("studio:delete-task", id),
   taskAction: (id, action, options) =>
     ipcRenderer.invoke("studio:action", id, action, options),
+  codeDiff: (id) => ipcRenderer.invoke("studio:code-diff", id),
   openTarget: (id, external) =>
     ipcRenderer.invoke("studio:open-target", id, external),
   exportTask: (id) => ipcRenderer.invoke("studio:export", id),

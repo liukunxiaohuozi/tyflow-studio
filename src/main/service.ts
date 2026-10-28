@@ -14,6 +14,7 @@ import type {
   Project,
   RepositoryInfo,
   ChangeReview,
+  CodeDiff,
   FileAsset,
   FailureCategory,
 } from "../shared/contracts";
@@ -52,7 +53,7 @@ import {
   safeTargetUrl,
   validateSettings,
 } from "./policy";
-import { killTree, resolveCommand, which } from "./process";
+import { killTree, resolveCommand, runCommand, which } from "./process";
 import { resolveCodex } from "./codex";
 import { WeComNotifier, type WeComTransport } from "./providers/wecom";
 import type { TaskNotification } from "./providers/notification";
@@ -608,6 +609,89 @@ export class StudioService {
       if (fs.existsSync(target))
         fs.rmSync(target, { recursive: true, force: true });
     }
+  }
+  public async codeDiff(id: string): Promise<CodeDiff> {
+    const task = this.store.getTask(id);
+    if (!task.snapshot) throw new Error("任务尚未进入开发阶段，暂无代码改动");
+    const root = task.snapshot.project.directory;
+    const realRoot = fs.realpathSync.native(root);
+    const { files } = await this.taskChanges(task);
+    const sourceFiles = files
+      .filter(
+        (file) =>
+          !isTestArtifact(root, file.path, file.changeType) &&
+          !/(?:^|\/)node_modules(?:\/|$)|(?:^|\/)\.git(?:\/|$)/i.test(
+            file.path.replace(/\\/g, "/"),
+          ),
+      )
+      .slice(0, 100);
+    const result: CodeDiff["files"] = [];
+    for (const file of sourceFiles) {
+      const relative = file.path.replace(/\\/g, "/");
+      if (
+        relative.split("/").some((part) => part === "..") ||
+        /^(?:\/|[a-z]:)/i.test(relative)
+      )
+        throw new Error("代码对比文件路径无效");
+      const absolute = path.resolve(root, relative);
+      const lexical = path.relative(realRoot, absolute);
+      if (lexical.startsWith("..") || path.isAbsolute(lexical))
+        throw new Error("代码对比文件路径越界");
+      let before = "";
+      let after = "";
+      let binary = false;
+      let truncated = false;
+      if (!["added", "untracked", "renamed"].includes(file.changeType)) {
+        const spec = `${task.snapshot.baseCommit}:${relative}`;
+        const size = Number(
+          await runCommand(resolveCommand("git"), ["cat-file", "-s", spec], {
+            cwd: root,
+            timeout: 10000,
+          }),
+        );
+        if (!Number.isFinite(size)) throw new Error("无法读取基线文件大小");
+        if (size > 1_000_000) truncated = true;
+        else
+          before = await runCommand(resolveCommand("git"), ["show", spec], {
+            cwd: root,
+            timeout: 15000,
+          });
+      }
+      if (fs.existsSync(absolute)) {
+        const physical = path.relative(
+          realRoot,
+          fs.realpathSync.native(absolute),
+        );
+        if (physical.startsWith("..") || path.isAbsolute(physical))
+          throw new Error("代码对比文件链接越界");
+        const stat = fs.statSync(absolute);
+        if (!stat.isFile()) binary = true;
+        else if (stat.size > 1_000_000) truncated = true;
+        else after = fs.readFileSync(absolute, "utf8");
+      }
+      binary ||= before.includes("\0") || after.includes("\0");
+      if (before.length > 500_000) {
+        before = before.slice(0, 500_000);
+        truncated = true;
+      }
+      if (after.length > 500_000) {
+        after = after.slice(0, 500_000);
+        truncated = true;
+      }
+      result.push({
+        path: relative,
+        changeType: file.changeType,
+        before: binary ? "" : before,
+        after: binary ? "" : after,
+        ...(binary ? { binary: true } : {}),
+        ...(truncated ? { truncated: true } : {}),
+      });
+    }
+    return {
+      baseCommit: task.snapshot.baseCommit,
+      generatedAt: new Date().toISOString(),
+      files: result,
+    };
   }
   private publish(task: Task) {
     const saved = this.store.putTask(task);

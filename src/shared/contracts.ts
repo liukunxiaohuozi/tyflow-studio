@@ -202,6 +202,19 @@ export interface ChangeReview {
   uncoveredFiles: string[];
   riskyChanges: string[];
 }
+export interface CodeDiffFile {
+  path: string;
+  changeType: ChangeReviewFile["changeType"];
+  before: string;
+  after: string;
+  binary?: boolean;
+  truncated?: boolean;
+}
+export interface CodeDiff {
+  baseCommit: string;
+  generatedAt: string;
+  files: CodeDiffFile[];
+}
 export interface TestExecution {
   contractVersion: 1;
   provider: "frontend-test" | "test-engineer" | "tyflow-native";
@@ -500,6 +513,7 @@ export interface StudioAPI {
       supplement?: { text?: string; assetIds?: string[] };
     },
   ): Promise<Task>;
+  codeDiff(id: string): Promise<CodeDiff>;
   openTarget(id: string, external?: boolean): Promise<void>;
   exportTask(id: string): Promise<string | null>;
   onTask(callback: (task: Task) => void): () => void;

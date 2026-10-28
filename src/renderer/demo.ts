@@ -243,9 +243,28 @@ export class DemoSession {
       }),
       saveTask: async (input) => this.save(input),
       deleteTask: async () => {
-        throw new Error(I18nT("演示任务无需删除，退出演示后会自动清理。", "Demo tasks are cleared automatically when you exit the demo."));
+        throw new Error(
+          I18nT(
+            "演示任务无需删除，退出演示后会自动清理。",
+            "Demo tasks are cleared automatically when you exit the demo.",
+          ),
+        );
       },
       taskAction: async (_id, action, options) => this.action(action, options),
+      codeDiff: async () => ({
+        baseCommit: "demo-commit",
+        generatedAt: new Date().toISOString(),
+        files: [
+          {
+            path: "src/pages/AlertRules.tsx",
+            changeType: "modified",
+            before:
+              "const rules = allRules;\nreturn <RuleTable data={rules} />;",
+            after:
+              "const rules = filterRules(allRules, keyword, status);\nreturn <RuleTable data={rules} />;",
+          },
+        ],
+      }),
       openTarget: async () => this.preview(),
       exportTask: async () => {
         throw new Error(
@@ -452,7 +471,10 @@ export class DemoSession {
                 ...base.testCases,
                 {
                   id: "CASE-REV",
-                  title: I18nT("按意见新增的验收", "Acceptance from revision notes"),
+                  title: I18nT(
+                    "按意见新增的验收",
+                    "Acceptance from revision notes",
+                  ),
                   steps: [
                     I18nT(
                       "核对修改意见是否已体现在实现与用例中。",

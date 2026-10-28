@@ -419,6 +419,7 @@ function bind() {
                 .parse(options),
         ),
   );
+  handle("code-diff", (id) => service!.codeDiff(uuid.parse(id)));
   handle("open-target", (id, external) =>
     service!.openTarget(uuid.parse(id), z.boolean().optional().parse(external)),
   );

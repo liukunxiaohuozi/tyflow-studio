@@ -390,6 +390,33 @@ test("a file changed before and during the task is reported for review without b
   expect(calls()[0].prompt).toContain("Preserve it");
 });
 
+test("code comparison returns only task files with frozen before and current after content", async () => {
+  fs.writeFileSync(path.join(repository, "local-proxy.cjs"), "base proxy");
+  git("add", "local-proxy.cjs");
+  git("commit", "-m", "add proxy fixture");
+  fs.writeFileSync(path.join(repository, "local-proxy.cjs"), "developer proxy");
+  const task = create({
+    kind: "bug",
+    workflowMode: "quick",
+    workspaceMode: "current",
+    branch: { mode: "existing", base: "main", name: "main", version: "" },
+  });
+  configure({
+    developmentFiles: { "verify.cjs": "console.log('review this task')" },
+  });
+
+  await service.action(task.id, "fix");
+  await status(task.id, "waiting-review");
+  const comparison = await service.codeDiff(task.id);
+
+  expect(comparison.files.map((file) => file.path)).toEqual(["verify.cjs"]);
+  expect(comparison.files[0].before).toContain("fixture local test passed");
+  expect(comparison.files[0].after).toContain("review this task");
+  expect(comparison.files.some((file) => file.path === "local-proxy.cjs")).toBe(
+    false,
+  );
+});
+
 test("acceptance commits only files changed by this task and leaves earlier local work uncommitted", async () => {
   fs.writeFileSync(path.join(repository, "local-proxy.cjs"), "base proxy");
   git("add", "local-proxy.cjs");
