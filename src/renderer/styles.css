@@ -1730,6 +1730,19 @@ dialog::backdrop {
   justify-content: flex-end;
   margin-top: 22px;
 }
+.overlap-file-list {
+  margin: 16px 0 0;
+  padding: 12px 12px 12px 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #334155;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+.overlap-file-list li + li {
+  margin-top: 6px;
+}
 .supplement-modal textarea {
   width: 100%;
   resize: vertical;

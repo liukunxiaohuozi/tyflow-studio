@@ -24,6 +24,7 @@ import {
   Notice,
   PreviewDrawer,
   PlanDialog,
+  Modal,
   Status,
   statusLabel,
 } from "./components";
@@ -119,6 +120,7 @@ export default function RunView({
   >(null);
   const [diagnosisOpen, setDiagnosisOpen] = useState(false);
   const [browserPreparationOpen, setBrowserPreparationOpen] = useState(false);
+  const [overlapConfirmOpen, setOverlapConfirmOpen] = useState(false);
   const [activityNow, setActivityNow] = useState(Date.now());
   const logRef = useRef<HTMLDivElement>(null);
   const running = activeStatuses.includes(task.status);
@@ -164,13 +166,14 @@ export default function RunView({
     }
   }
   async function completeAndPush() {
-    if (task.workspaceOverlap?.length)
-      report(
-        I18nT(
-          "检测到上一次未提交修改与本次修改交织在同一文件中，无法安全拆分；将把这些文件当前的完整内容一起提交并推送：",
-          "Previous uncommitted changes and this task's changes are intertwined in the same files and cannot be safely separated. The complete current files will be committed and pushed:",
-        ) + task.workspaceOverlap.join("、"),
-      );
+    if (task.workspaceOverlap?.length) {
+      setOverlapConfirmOpen(true);
+      return;
+    }
+    await action("accept");
+  }
+  async function confirmOverlapPush() {
+    setOverlapConfirmOpen(false);
     await action("accept");
   }
   async function confirmStart() {
@@ -1452,6 +1455,41 @@ export default function RunView({
           tab={dialog}
           close={() => setDialog(undefined)}
         />
+      )}
+      {overlapConfirmOpen && task.workspaceOverlap?.length && (
+        <Modal
+          title={I18nT("确认提交交织文件", "Confirm intertwined files")}
+          close={() => setOverlapConfirmOpen(false)}
+        >
+          <Notice tone="info">
+            {task.kind === "bug"
+              ? I18nT(
+                  "由于两个 Bug 均在以下文件中进行修复，代码改动已经交织，无法避开并单独提交其中一次修改。确认后，Studio 会将这些文件当前的完整内容一起提交并推送。",
+                  "Both bugs modify the files below. Their changes are intertwined and cannot be safely committed separately. Confirming will commit and push the complete current contents of these files.",
+                )
+              : I18nT(
+                  "由于两个任务均修改了以下文件，代码改动已经交织，无法避开并单独提交其中一次修改。确认后，Studio 会将这些文件当前的完整内容一起提交并推送。",
+                  "Both tasks modify the files below. Their changes are intertwined and cannot be safely committed separately. Confirming will commit and push the complete current contents of these files.",
+                )}
+          </Notice>
+          <ul className="overlap-file-list">
+            {task.workspaceOverlap.map((file) => (
+              <li key={file}>{file}</li>
+            ))}
+          </ul>
+          <div className="actions modal-actions">
+            <button onClick={() => setOverlapConfirmOpen(false)}>
+              {I18nT("取消", "Cancel")}
+            </button>
+            <button
+              className="primary"
+              disabled={busy}
+              onClick={() => void confirmOverlapPush()}
+            >
+              {I18nT("确定提交", "Confirm and push")}
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );
