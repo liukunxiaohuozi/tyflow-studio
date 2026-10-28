@@ -249,35 +249,45 @@ export class UpdateManager {
         const repository = settings?.githubRepository;
         if (!repository || !/^[\w.-]+\/[\w.-]+$/.test(repository))
           throw new Error("请配置内部更新清单或 GitHub 仓库");
-        const release = await this.json(
-          `https://api.github.com/repos/${repository}/releases/latest`,
-        );
-        const tag = z
-          .object({ tag_name: z.string().optional() })
-          .passthrough()
-          .parse(release).tag_name;
-        const publishedVersion = version.safeParse(tag?.replace(/^v/, ""));
-        if (
-          publishedVersion.success &&
-          !newer(publishedVersion.data, this.options.version)
-        ) {
-          this.info = {
-            status: "current",
-            currentVersion: this.options.version,
-          };
-          return this.status();
-        }
-        githubAssets = z
-          .array(z.object({ name: z.string(), url: z.string().url() }))
-          .parse(release.assets);
-        const entry = githubAssets.find(
-          (asset) => asset.name === "update-manifest.json",
-        );
-        if (!entry)
-          throw new Error(
-            "此版本未提供更新清单，请从发布页下载，或发布带 update-manifest.json 的新版本",
+        // Public repositories can fetch the stable release asset directly.
+        // This avoids GitHub's low unauthenticated REST API rate limit, while
+        // the API path remains available for private repositories and tokens.
+        try {
+          manifest = await this.json(
+            `https://github.com/${repository}/releases/latest/download/update-manifest.json`,
+            "application/octet-stream",
           );
-        manifest = await this.json(entry.url, "application/octet-stream");
+        } catch {
+          const release = await this.json(
+            `https://api.github.com/repos/${repository}/releases/latest`,
+          );
+          const tag = z
+            .object({ tag_name: z.string().optional() })
+            .passthrough()
+            .parse(release).tag_name;
+          const publishedVersion = version.safeParse(tag?.replace(/^v/, ""));
+          if (
+            publishedVersion.success &&
+            !newer(publishedVersion.data, this.options.version)
+          ) {
+            this.info = {
+              status: "current",
+              currentVersion: this.options.version,
+            };
+            return this.status();
+          }
+          githubAssets = z
+            .array(z.object({ name: z.string(), url: z.string().url() }))
+            .parse(release.assets);
+          const entry = githubAssets.find(
+            (asset) => asset.name === "update-manifest.json",
+          );
+          if (!entry)
+            throw new Error(
+              "此版本未提供更新清单，请从发布页下载，或发布带 update-manifest.json 的新版本",
+            );
+          manifest = await this.json(entry.url, "application/octet-stream");
+        }
       }
       const parsed = manifestSchema.parse(manifest);
       if (!newer(parsed.version, this.options.version)) {

@@ -148,7 +148,7 @@ test("explicit rollback still works from the exact runtime that selected it", ()
   ).toBeUndefined();
 });
 
-test("same GitHub version is current without fetching a manifest or requiring packages", async () => {
+test("same GitHub manifest version is current without requiring a matching package", async () => {
   const settings = initialSettings();
   settings.updates = {
     manifestUrl: "",
@@ -157,7 +157,22 @@ test("same GitHub version is current without fetching a manifest or requiring pa
   };
   const request = jest.fn(
     async () =>
-      new Response(JSON.stringify({ tag_name: "v0.3.4", assets: [] })),
+      new Response(
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "0.3.4",
+          assets: [
+            {
+              platform: "win32",
+              arch: "x64",
+              name: "fixture.zip",
+              url: "https://github.com/fixture/studio/releases/download/v0.3.4/fixture.zip",
+              size: 100,
+              sha256: "0".repeat(64),
+            },
+          ],
+        }),
+      ),
   );
   const manager = new UpdateManager({
     directory: root,
@@ -172,6 +187,133 @@ test("same GitHub version is current without fetching a manifest or requiring pa
   expect((await manager.check()).status).toBe("current");
   expect((await manager.check()).status).toBe("current");
   expect(request).toHaveBeenCalledTimes(2);
+});
+
+test("public GitHub updates use the release manifest without consuming API rate limits", async () => {
+  const settings = initialSettings();
+  settings.updates = {
+    manifestUrl: "",
+    githubRepository: "fixture/studio",
+    checkOnLaunch: true,
+  };
+  const seen: string[] = [];
+  const request = jest.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    seen.push(url);
+    if (
+      url ===
+      "https://github.com/fixture/studio/releases/latest/download/update-manifest.json"
+    )
+      return new Response(
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "0.3.33",
+          assets: [
+            {
+              platform: "win32",
+              arch: "x64",
+              name: "studio.zip",
+              url: "https://github.com/fixture/studio/releases/download/v0.3.33/studio.zip",
+              size: 100,
+              sha256: "0".repeat(64),
+            },
+          ],
+        }),
+      );
+    if (url.includes("api.github.com"))
+      return new Response(null, { status: 403 });
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  const manager = new UpdateManager({
+    directory: root,
+    version: "0.3.31",
+    platform: "win32",
+    arch: "x64",
+    executable: "fixture",
+    settings: () => settings,
+    secret: () => undefined,
+    fetch: request as typeof fetch,
+  });
+
+  expect(await manager.check()).toMatchObject({
+    status: "available",
+    version: "0.3.33",
+  });
+  expect(seen).toEqual([
+    "https://github.com/fixture/studio/releases/latest/download/update-manifest.json",
+  ]);
+});
+
+test("private GitHub updates fall back to authenticated release assets", async () => {
+  const settings = initialSettings();
+  settings.updates = {
+    manifestUrl: "",
+    githubRepository: "fixture/private-studio",
+    checkOnLaunch: true,
+  };
+  const seen: string[] = [];
+  const request = jest.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    seen.push(url);
+    if (
+      url.includes("github.com/fixture/private-studio/releases/latest/download")
+    )
+      return new Response(null, { status: 404 });
+    if (url.endsWith("/releases/latest"))
+      return new Response(
+        JSON.stringify({
+          tag_name: "v0.3.33",
+          assets: [
+            {
+              name: "update-manifest.json",
+              url: "https://api.github.com/repos/fixture/private-studio/releases/assets/1",
+            },
+            {
+              name: "studio.zip",
+              url: "https://api.github.com/repos/fixture/private-studio/releases/assets/2",
+            },
+          ],
+        }),
+      );
+    if (url.endsWith("/releases/assets/1"))
+      return new Response(
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "0.3.33",
+          assets: [
+            {
+              platform: "win32",
+              arch: "x64",
+              name: "studio.zip",
+              url: "https://github.com/fixture/private-studio/releases/download/v0.3.33/studio.zip",
+              size: 100,
+              sha256: "0".repeat(64),
+            },
+          ],
+        }),
+      );
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  const manager = new UpdateManager({
+    directory: root,
+    version: "0.3.31",
+    platform: "win32",
+    arch: "x64",
+    executable: "fixture",
+    settings: () => settings,
+    secret: () => "private-token",
+    fetch: request as typeof fetch,
+  });
+
+  expect(await manager.check()).toMatchObject({
+    status: "available",
+    version: "0.3.33",
+  });
+  expect(seen).toEqual([
+    "https://github.com/fixture/private-studio/releases/latest/download/update-manifest.json",
+    "https://api.github.com/repos/fixture/private-studio/releases/latest",
+    "https://api.github.com/repos/fixture/private-studio/releases/assets/1",
+  ]);
 });
 
 test("equal manifest version needs no matching installable platform", async () => {
