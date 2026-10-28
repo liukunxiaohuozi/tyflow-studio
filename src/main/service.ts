@@ -633,7 +633,10 @@ export class StudioService {
         /^(?:\/|[a-z]:)/i.test(relative)
       )
         throw new Error("代码对比文件路径无效");
-      const absolute = path.resolve(root, relative);
+      // macOS temporary directories may be reached through /var while their
+      // physical path is /private/var. Resolve children from the physical root
+      // so the containment check compares canonical paths on every platform.
+      const absolute = path.resolve(realRoot, relative);
       const lexical = path.relative(realRoot, absolute);
       if (lexical.startsWith("..") || path.isAbsolute(lexical))
         throw new Error("代码对比文件路径越界");
