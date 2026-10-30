@@ -379,6 +379,10 @@ test("a file changed before and during the task is reported for review without b
   const finished = await status(task.id, "waiting-review");
 
   expect(finished.workspaceOverlap).toEqual(["verify.cjs"]);
+  expect(finished.workspaceSourceBaseline?.["verify.cjs"]).toMatchObject({
+    path: expect.stringMatching(/\.source$/),
+    sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
   expect(
     finished.logs.some(
       (entry) =>

@@ -154,6 +154,8 @@ export async function reconcileHistoricalLint(options: {
   task: Task;
   checks: CheckResult[];
   changedFiles: string[];
+  sourceBaseline?: Record<string, string>;
+  preExistingFiles?: string[];
   identityBefore: string;
   evidence: EvidenceStore;
   signal: AbortSignal;
@@ -210,6 +212,9 @@ export async function reconcileHistoricalLint(options: {
     if (!sourceFiles.length || sourceFiles.length > 20)
       throw new Error("变更源码范围为空或超出 20 文件的聚焦检查上限");
     const inputs: { file: string; before: string; after: string }[] = [];
+    const preExistingFiles = new Set(
+      (options.preExistingFiles ?? []).map((file) => file.replace(/\\/g, "/")),
+    );
     const deadline = Date.now() + 30000;
     for (const file of sourceFiles) {
       if (
@@ -232,22 +237,29 @@ export async function reconcileHistoricalLint(options: {
         throw new Error("源码路径越界");
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error("ESLint 基线准备超时");
-      const tracked = await runCommand(
-        resolveCommand("git"),
-        ["ls-tree", "--name-only", task.snapshot.baseCommit, "--", file],
-        { cwd: directory, signal, timeout: Math.min(10000, remaining) },
-      );
-      const before = tracked.trim()
-        ? await runCommand(
-            resolveCommand("git"),
-            ["show", `${task.snapshot.baseCommit}:${file}`],
-            {
-              cwd: directory,
-              signal,
-              timeout: Math.max(1, Math.min(10000, deadline - Date.now())),
-            },
-          )
-        : "";
+      let before: string;
+      if (preExistingFiles.has(file)) {
+        if (!Object.hasOwn(options.sourceBaseline ?? {}, file))
+          throw new Error("任务开始时源码基线缺失：" + file);
+        before = options.sourceBaseline![file];
+      } else {
+        const tracked = await runCommand(
+          resolveCommand("git"),
+          ["ls-tree", "--name-only", task.snapshot.baseCommit, "--", file],
+          { cwd: directory, signal, timeout: Math.min(10000, remaining) },
+        );
+        before = tracked.trim()
+          ? await runCommand(
+              resolveCommand("git"),
+              ["show", `${task.snapshot.baseCommit}:${file}`],
+              {
+                cwd: directory,
+                signal,
+                timeout: Math.max(1, Math.min(10000, deadline - Date.now())),
+              },
+            )
+          : "";
+      }
       const after = fs.readFileSync(absolute, "utf8");
       if (before.length > 500_000) throw new Error("基线文件过大");
       inputs.push({ file, before, after });

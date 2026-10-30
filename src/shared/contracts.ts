@@ -283,6 +283,8 @@ export interface Task extends TaskInput {
   quickBaseline?: Record<string, string>;
   /** Hashes of files already dirty when current-checkout development began. */
   workspaceBaseline?: Record<string, string>;
+  /** Integrity-checked contents of dirty source files at task start. */
+  workspaceSourceBaseline?: Record<string, ResultReference>;
   /** Pre-existing dirty files that were also changed by this task. */
   workspaceOverlap?: string[];
   browserTest?: import("./browser-test").BrowserTestConfig;

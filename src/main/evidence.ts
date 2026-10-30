@@ -34,7 +34,29 @@ export class EvidenceStore {
       sha256: createHash("sha256").update(fs.readFileSync(file)).digest("hex"),
     };
   }
+  saveSourceSnapshot(task: Task, source: string): ResultReference {
+    const root = path.join(this.directory, "evidence", task.id);
+    fs.mkdirSync(root, { recursive: true });
+    const file = path.join(root, `${randomUUID()}.source`);
+    fs.writeFileSync(file, source, { encoding: "utf8", mode: 0o600 });
+    return {
+      path: file,
+      sha256: createHash("sha256").update(fs.readFileSync(file)).digest("hex"),
+    };
+  }
+  readSourceSnapshot(task: Task, reference: ResultReference): string {
+    const body = this.readEvidenceFile(task, reference, 500_000);
+    return body.toString("utf8");
+  }
   readResult<T>(task: Task, reference: ResultReference): T {
+    const body = this.readEvidenceFile(task, reference, 2_000_000);
+    return JSON.parse(body.toString("utf8")) as T;
+  }
+  private readEvidenceFile(
+    task: Task,
+    reference: ResultReference,
+    maxBytes: number,
+  ) {
     const root = path.join(this.directory, "evidence", task.id);
     const relative = path.relative(root, reference.path);
     if (
@@ -52,11 +74,11 @@ export class EvidenceStore {
       throw new Error("检查点证据越界");
     const body = fs.readFileSync(reference.path);
     if (
-      body.length > 2_000_000 ||
+      body.length > maxBytes ||
       createHash("sha256").update(body).digest("hex") !== reference.sha256
     )
       throw new Error("检查点证据指纹不一致");
-    return JSON.parse(body.toString("utf8")) as T;
+    return body;
   }
   appendLog(
     task: Task,

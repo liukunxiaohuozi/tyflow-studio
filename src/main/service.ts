@@ -1818,6 +1818,41 @@ export class StudioService {
     }
     return state;
   }
+  private async captureWorkspaceSourceBaseline(task: Task) {
+    if (!task.snapshot) throw new Error("执行快照缺失");
+    const root = task.snapshot.project.directory;
+    const realRoot = fs.realpathSync.native(root);
+    const files = await this.scm.changedFilesSince(
+      root,
+      task.snapshot.baseCommit,
+    );
+    const baseline: NonNullable<Task["workspaceSourceBaseline"]> = {};
+    let totalBytes = 0;
+    for (const file of files) {
+      const relative = file.path.replace(/\\/g, "/");
+      if (!/\.(?:[cm]?[jt]sx?)$/i.test(relative)) continue;
+      if (
+        relative.split("/").some((part) => part === "..") ||
+        /^(?:\/|[a-z]:|node_modules\/|\.git\/)/i.test(relative)
+      )
+        continue;
+      const absolute = path.resolve(realRoot, relative);
+      if (!fs.existsSync(absolute) || fs.lstatSync(absolute).isSymbolicLink())
+        continue;
+      const physical = path.relative(
+        realRoot,
+        fs.realpathSync.native(absolute),
+      );
+      if (physical.startsWith("..") || path.isAbsolute(physical)) continue;
+      const stat = fs.statSync(absolute);
+      if (!stat.isFile() || stat.size > 500_000) continue;
+      if (totalBytes + stat.size > 10_000_000) continue;
+      const source = fs.readFileSync(absolute, "utf8");
+      baseline[relative] = this.evidence.saveSourceSnapshot(task, source);
+      totalBytes += Buffer.byteLength(source);
+    }
+    return baseline;
+  }
   private async taskChanges(task: Task) {
     if (!task.snapshot) throw new Error("执行快照缺失");
     const root = task.snapshot.project.directory;
@@ -2009,6 +2044,8 @@ export class StudioService {
           task.approvedRevision = task.planRevision;
           if (!task.workspace) {
             task.workspaceBaseline = await this.workspaceFileState(task);
+            task.workspaceSourceBaseline =
+              await this.captureWorkspaceSourceBaseline(task);
             task.workspaceOverlap = [];
             if (quick) task.quickBaseline = task.workspaceBaseline;
           }
@@ -2117,12 +2154,29 @@ export class StudioService {
               file.changeType,
             ),
         );
+        const sourceBaseline: Record<string, string> = {};
+        for (const file of implementationFiles) {
+          const relative = file.path.replace(/\\/g, "/");
+          const reference = task.workspaceSourceBaseline?.[relative];
+          if (!reference) continue;
+          try {
+            sourceBaseline[relative] = this.evidence.readSourceSnapshot(
+              task,
+              reference,
+            );
+          } catch {
+            // Reconciliation treats a missing or invalid task-start source as
+            // incomplete rather than comparing an overlapping file to HEAD.
+          }
+        }
         report.checks = await reconcileHistoricalLint({
           task,
           checks: report.checks,
           changedFiles: implementationFiles.map((file) =>
             file.path.replace(/\\/g, "/"),
           ),
+          sourceBaseline,
+          preExistingFiles: overlaps,
           identityBefore: qualityIdentity,
           evidence: this.evidence,
           signal,

@@ -234,11 +234,15 @@ describe("production child-process lint baseline comparison", () => {
   async function compare(
     identityBefore = qualityEnvironmentIdentity(root),
     checks = [check()],
+    sourceBaseline: Record<string, string> = {},
+    preExistingFiles: string[] = [],
   ) {
     return reconcileHistoricalLint({
       task,
       checks,
       changedFiles: [relative],
+      sourceBaseline,
+      preExistingFiles,
       identityBefore,
       evidence,
       signal: new AbortController().signal,
@@ -325,6 +329,59 @@ module.exports={Linter,Configuration:{findConfiguration:()=>({results:{}})}};`,
         sha256: result.historical!.sha256,
       }),
     ).toMatchObject({ tool: "tslint", files: [{ file: relative }] });
+  });
+  test("a dirty task-start source is the lint baseline when the same file changes again", async () => {
+    fs.mkdirSync(path.join(root, "node_modules/tslint"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "node_modules/tslint/package.json"),
+      JSON.stringify({ main: "index.cjs", version: "5.20.1-fixture" }),
+    );
+    fs.writeFileSync(
+      path.join(root, "node_modules/tslint/index.cjs"),
+      `class Failure {
+  constructor(file,line,source){this.file=file;this.line=line;this.source=source}
+  getRuleName(){return 'curly'}
+  getFailure(){return 'if statements must be braced'}
+  getStartPosition(){return {getLineAndCharacter:()=>({line:this.line,character:0})}}
+}
+class Linter {
+  lint(file,source){
+    this.failures=source.split(/\\r?\\n/).flatMap((line,index)=>/^if \\(/.test(line.trim())?[new Failure(file,index,line.trim())]:[])
+  }
+  getResult(){return {failures:this.failures||[]}}
+}
+module.exports={Linter,Configuration:{findConfiguration:()=>({results:{}})}};`,
+    );
+    fs.writeFileSync(path.join(root, "tslint.json"), '{"rules":{"curly":true}}');
+    const dirtyAtTaskStart = "if (shapeName === 'hide-eye-shape') return;\n";
+    fs.writeFileSync(
+      path.join(root, relative),
+      dirtyAtTaskStart + "item.toFront();\n",
+    );
+    const [result] = await compare(
+      undefined,
+      [
+        {
+          name: "聚焦 TSLint",
+          state: "failed",
+          purpose: "quality",
+          detail: "existing curly diagnostic",
+        },
+      ],
+      { [relative]: dirtyAtTaskStart },
+      [relative],
+    );
+    expect(result.historical?.count).toBe(1);
+    expect(evaluateDevelopmentChecks([regression, result]).outcome).toBe(
+      "completed",
+    );
+  });
+  test("an overlapping dirty source without its task-start snapshot stays incomplete", async () => {
+    fs.writeFileSync(path.join(root, relative), "const repaired = true;\n");
+    const [result] = await compare(undefined, [check()], {}, [relative]);
+    expect(result.state).toBe("blocked");
+    expect(result.historical).toBeUndefined();
+    expect(result.detail).toContain("任务开始时源码基线缺失");
   });
   test("same error count on changed faulty code is not waived", async () => {
     fs.writeFileSync(
